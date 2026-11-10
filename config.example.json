@@ -1,0 +1,48 @@
+{
+  "title": "SQLWeb 离线控制台",
+  "host": "0.0.0.0",
+  "port": 8899,
+  "base_path": "",
+  "readonly": true,
+  "max_rows": 1000,
+  "connect_timeout": 10,
+  "statement_timeout_ms": 30000,
+  "default_db": "",
+  "databases": [
+    {
+      "key": "pg_demo",
+      "label": "示例 PostgreSQL",
+      "driver": "postgresql",
+      "host": "127.0.0.1",
+      "port": 5432,
+      "user": "postgres",
+      "password": "改成真实口令",
+      "dbname": "postgres",
+      "readonly": true
+    },
+    {
+      "key": "dm_demo",
+      "label": "示例 达梦 DM8",
+      "driver": "dameng",
+      "host": "127.0.0.1",
+      "port": 5236,
+      "user": "SYSDBA",
+      "password": "改成真实口令",
+      "dbname": "",
+      "readonly": true
+    },
+    {
+      "key": "sqlite_demo",
+      "label": "示例 SQLite",
+      "driver": "sqlite",
+      "host": "",
+      "port": "",
+      "user": "",
+      "password": "",
+      "dbname": "",
+      "path": "/data/demo.db",
+      "readonly": true
+    }
+  ],
+  "redis": []
+}

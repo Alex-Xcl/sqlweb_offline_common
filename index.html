@@ -1,0 +1,1055 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SQLWeb 离线控制台</title>
+<style>
+  :root{
+    --sidebar:#101827; --sidebar2:#0b1220; --panel:#ffffff; --ink:#0f172a;
+    --muted:#64748b; --line:#e2e8f0; --brand:#2563eb; --ok:#16a34a;
+    --warn:#d97706; --danger:#dc2626; --code:#0f172a;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%; margin:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",
+    "Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    font-size:13.5px; color:var(--ink); background:#f1f5f9;
+    display:flex; flex-direction:column; height:100vh; overflow:hidden;
+  }
+  /* ---------- 顶栏 ---------- */
+  header{
+    height:52px; flex:none; display:flex; align-items:center; gap:14px;
+    padding:0 16px; background:var(--sidebar2); color:#e2e8f0;
+    border-bottom:1px solid #1e293b; z-index:20;
+  }
+  header .logo{font-weight:650; font-size:15px; letter-spacing:.3px; white-space:nowrap}
+  header .ver{font-size:11px; color:#64748b; margin-left:-6px; white-space:nowrap}
+  header .grow{flex:1}
+  header select{
+    height:30px; border-radius:7px; border:1px solid #334155; background:#1e293b;
+    color:#e2e8f0; padding:0 8px; font-size:12.5px; outline:none; max-width:230px;
+    font-family:inherit;
+  }
+  header .who{font-size:12px; color:#94a3b8; white-space:nowrap}
+  .hbtn{
+    height:30px; padding:0 12px; border-radius:7px; border:1px solid #334155;
+    background:#1e293b; color:#cbd5e1; font-size:12.5px; cursor:pointer;
+    font-family:inherit; white-space:nowrap;
+  }
+  .hbtn:hover{background:#273449; color:#fff}
+  .hbtn.primary{background:var(--brand); border-color:var(--brand); color:#fff}
+  .hbtn.primary:hover{filter:brightness(1.08)}
+
+  /* ---------- 主体 ---------- */
+  main{flex:1; display:flex; min-height:0}
+  aside{
+    width:290px; flex:none; background:var(--sidebar); color:#cbd5e1;
+    display:flex; flex-direction:column; min-height:0;
+    border-right:1px solid #1e293b;
+  }
+  aside .asec{
+    padding:9px 12px 7px; font-size:11.5px; color:#64748b; letter-spacing:.6px;
+    text-transform:uppercase; border-bottom:1px solid #1e293b; flex:none;
+    display:flex; align-items:center; justify-content:space-between;
+  }
+  aside .asec .mini{
+    font-size:11px; color:#64748b; cursor:pointer; letter-spacing:0;
+    text-transform:none; padding:2px 6px; border-radius:4px;
+  }
+  aside .asec .mini:hover{background:#1e293b; color:#94a3b8}
+  .tree{flex:1; overflow:auto; padding:6px 0 20px}
+  .tree::-webkit-scrollbar{width:8px}
+  .tree::-webkit-scrollbar-thumb{background:#334155; border-radius:4px}
+  .tnode{
+    padding:5px 12px 5px 16px; cursor:pointer; display:flex; align-items:center;
+    gap:7px; font-size:12.8px; line-height:1.5; user-select:none;
+  }
+  .tnode:hover{background:#1a2436}
+  .tnode.active{background:#1e3a8a55; color:#dbeafe}
+  .tnode .ic{width:13px; flex:none; color:#64748b; font-size:11px; text-align:center}
+  .tnode .nm{overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1}
+  .tnode .cnt{font-size:10.5px; color:#64748b}
+  .tnode.depth1{padding-left:16px}
+  .tnode.depth2{padding-left:32px; font-size:12.4px}
+  .tnode.depth3{padding-left:48px; font-size:12.2px; color:#94a3b8}
+  .treeload{padding:8px 16px; font-size:11.5px; color:#475569}
+
+  /* ---------- 工作区 ---------- */
+  section.ws{flex:1; display:flex; flex-direction:column; min-width:0; background:#f8fafc}
+  .bar{
+    flex:none; display:flex; align-items:center; gap:8px; padding:7px 12px;
+    background:var(--panel); border-bottom:1px solid var(--line);
+  }
+  .bar .tag{
+    font-size:11.5px; padding:2px 8px; border-radius:5px; background:#eff6ff;
+    color:#1d4ed8; border:1px solid #bfdbfe; white-space:nowrap;
+  }
+  .bar .tag.ro{background:#f0fdf4; color:#15803d; border-color:#bbf7d0}
+  .bar .tag.rw{background:#fef2f2; color:#b91c1c; border-color:#fecaca}
+  .bar .grow{flex:1}
+  .btn{
+    height:30px; padding:0 13px; border-radius:7px; border:1px solid var(--line);
+    background:#fff; color:#334155; font-size:12.5px; cursor:pointer;
+    font-family:inherit; white-space:nowrap;
+  }
+  .btn:hover{background:#f8fafc; border-color:#cbd5e1}
+  .btn.run{background:var(--brand); border-color:var(--brand); color:#fff; font-weight:600}
+  .btn.run:hover{filter:brightness(1.07)}
+  .btn:disabled{opacity:.55; cursor:not-allowed}
+
+  .editor{flex:none; height:38%; min-height:120px; display:flex; flex-direction:column; background:#fff}
+  .editor textarea{
+    flex:1; width:100%; border:0; outline:none; resize:none; padding:12px 14px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:13px; line-height:1.65; color:var(--code); tab-size:2;
+    background:#fff;
+  }
+  .splitter{
+    height:5px; flex:none; background:#e2e8f0; cursor:row-resize;
+    border-top:1px solid #cbd5e1; border-bottom:1px solid #cbd5e1;
+  }
+  .splitter:hover{background:#cbd5e1}
+
+  .result{flex:1; display:flex; flex-direction:column; min-height:0; background:#fff}
+  .rhead{
+    flex:none; display:flex; align-items:center; gap:10px; padding:6px 12px;
+    border-bottom:1px solid var(--line); font-size:12px; color:var(--muted);
+    background:#fbfdff; min-height:34px;
+  }
+  .rhead .stat{white-space:nowrap}
+  .rhead .stat b{color:#0f172a; font-weight:600}
+  .rhead .grow{flex:1}
+  .rbody{flex:1; overflow:auto; min-height:0}
+  .rbody::-webkit-scrollbar{width:10px; height:10px}
+  .rbody::-webkit-scrollbar-thumb{background:#cbd5e1; border-radius:5px}
+
+  table.grid{border-collapse:separate; border-spacing:0; font-size:12.5px; min-width:100%;}
+  table.grid th{
+    position:sticky; top:0; background:#f1f5f9; z-index:2;
+    padding:6px 10px; text-align:left; font-weight:600; color:#334155;
+    border-bottom:1px solid var(--line); border-right:1px solid var(--line);
+    white-space:nowrap;
+  }
+  table.grid td{
+    padding:5px 10px; border-bottom:1px solid #f1f5f9; border-right:1px solid #f8fafc;
+    white-space:nowrap; max-width:420px; overflow:hidden; text-overflow:ellipsis;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    color:#1e293b;
+  }
+  table.grid td.num{text-align:right; color:#0f4c81}
+  table.grid td.null{color:#94a3b8; font-style:italic}
+  table.grid td.rownum{
+    position:sticky; left:0; background:#fafbfc; color:#94a3b8; text-align:right;
+    min-width:44px; border-right:1px solid var(--line); z-index:1;
+  }
+  table.grid tbody tr:hover td{background:#f8fbff}
+  table.grid tbody tr:hover td.rownum{background:#eef4fd}
+
+  .empty{
+    height:100%; display:flex; align-items:center; justify-content:center;
+    color:#94a3b8; font-size:13px; flex-direction:column; gap:8px; padding:30px;
+    text-align:center; line-height:1.8;
+  }
+  .errbox{
+    margin:14px; padding:12px 14px; border-radius:9px; background:#fef2f2;
+    border:1px solid #fecaca; color:#b91c1c; font-size:12.5px; line-height:1.7;
+    font-family:ui-monospace,Menlo,Consolas,monospace; white-space:pre-wrap;
+    word-break:break-word;
+  }
+  .infobox{
+    margin:14px; padding:12px 14px; border-radius:9px; background:#f0fdf4;
+    border:1px solid #bbf7d0; color:#15803d; font-size:12.5px; line-height:1.7;
+  }
+
+  /* ---------- 弹窗 ---------- */
+  .modal{
+    position:fixed; inset:0; background:#0b1220cc; display:none;
+    align-items:center; justify-content:center; z-index:60; padding:20px;
+  }
+  .modal.show{display:flex}
+  .modal .box{
+    background:#fff; border-radius:14px; width:100%; max-width:780px;
+    max-height:88vh; display:flex; flex-direction:column;
+    box-shadow:0 30px 70px -20px rgba(0,0,0,.6);
+  }
+  .modal .mhead{
+    flex:none; display:flex; align-items:center; padding:14px 18px;
+    border-bottom:1px solid var(--line); gap:10px;
+  }
+  .modal .mhead h3{margin:0; font-size:15px; font-weight:650}
+  .modal .mhead .grow{flex:1}
+  .modal .mhead .x{
+    width:28px; height:28px; border:0; background:transparent; cursor:pointer;
+    font-size:18px; color:#64748b; border-radius:6px; line-height:1;
+  }
+  .modal .mhead .x:hover{background:#f1f5f9; color:#0f172a}
+  .modal .mbody{flex:1; overflow:auto; padding:16px 18px; min-height:0}
+  .modal .mfoot{
+    flex:none; padding:12px 18px; border-top:1px solid var(--line);
+    display:flex; gap:8px; justify-content:flex-end; background:#fbfdff;
+    border-radius:0 0 14px 14px;
+  }
+
+  .dslist{border:1px solid var(--line); border-radius:10px; overflow:hidden}
+  .dsrow{
+    display:flex; align-items:center; gap:10px; padding:9px 12px;
+    border-bottom:1px solid #f1f5f9; font-size:12.5px;
+  }
+  .dsrow:last-child{border-bottom:0}
+  .dsrow .nm{font-weight:600; color:#0f172a; min-width:110px}
+  .dsrow .badge{
+    font-size:10.5px; padding:2px 7px; border-radius:5px; background:#eff6ff;
+    color:#1d4ed8; border:1px solid #bfdbfe; white-space:nowrap;
+  }
+  .dsrow .badge.ro{background:#f0fdf4; color:#15803d; border-color:#bbf7d0}
+  .dsrow .addr{color:#64748b; font-size:11.5px; flex:1; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap}
+  .dsrow .act{display:flex; gap:6px; flex:none}
+  .mini-btn{
+    height:24px; padding:0 9px; border-radius:6px; border:1px solid var(--line);
+    background:#fff; font-size:11.5px; cursor:pointer; color:#334155; font-family:inherit;
+  }
+  .mini-btn:hover{background:#f8fafc}
+  .mini-btn.del{color:#b91c1c; border-color:#fecaca}
+  .mini-btn.del:hover{background:#fef2f2}
+
+  .formgrid{display:grid; grid-template-columns:120px 1fr; gap:10px 12px; align-items:center}
+  .formgrid label{font-size:12.5px; color:#334155; font-weight:500}
+  .formgrid input,.formgrid select{
+    height:34px; border:1px solid var(--line); border-radius:8px; padding:0 10px;
+    font-size:13px; outline:none; background:#f8fafc; font-family:inherit;
+    width:100%;
+  }
+  .formgrid input:focus,.formgrid select:focus{border-color:var(--brand); background:#fff}
+  .formgrid .full{grid-column:1 / -1}
+  .formgrid .note{grid-column:2; font-size:11.5px; color:var(--muted); margin-top:-6px; line-height:1.5}
+  .testbox{
+    margin-top:12px; padding:10px 12px; border-radius:8px; font-size:12.3px;
+    line-height:1.7; white-space:pre-wrap; word-break:break-word; display:none;
+    font-family:ui-monospace,Menlo,Consolas,monospace;
+  }
+  .testbox.ok{display:block; background:#f0fdf4; border:1px solid #bbf7d0; color:#15803d}
+  .testbox.err{display:block; background:#fef2f2; border:1px solid #fecaca; color:#b91c1c}
+
+  /* toast */
+  .toast{
+    position:fixed; left:50%; bottom:28px; transform:translateX(-50%) translateY(20px);
+    background:#0f172a; color:#e2e8f0; padding:9px 18px; border-radius:9px;
+    font-size:12.8px; opacity:0; pointer-events:none; transition:all .25s; z-index:80;
+    box-shadow:0 10px 30px -10px rgba(0,0,0,.6); max-width:70vw;
+  }
+  .toast.show{opacity:1; transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">SQLWeb 离线控制台</div>
+  <div class="ver" id="verLabel"></div>
+  <div class="grow"></div>
+  <select id="dbSelect" title="切换数据源"></select>
+  <button class="hbtn" id="btnDs">数据源</button>
+  <button class="hbtn" id="btnPwd">改密</button>
+  <span class="who" id="whoLabel"></span>
+  <button class="hbtn" id="btnLogout">退出</button>
+</header>
+
+<main>
+  <aside>
+    <div class="asec"><span>对象树</span><span class="mini" id="btnRefresh">刷新</span></div>
+    <div class="tree" id="tree">
+      <div class="treeload">正在加载…</div>
+    </div>
+  </aside>
+
+  <section class="ws">
+    <div class="bar">
+      <span class="tag" id="tagDb">—</span>
+      <span class="tag ro" id="tagRo">只读</span>
+      <div class="grow"></div>
+      <button class="btn" id="btnClear">清空</button>
+      <button class="btn run" id="btnRun">执行 (Ctrl+Enter)</button>
+    </div>
+
+    <div class="editor">
+      <textarea id="sql" spellcheck="false" placeholder="SELECT * FROM ..."></textarea>
+    </div>
+
+    <div class="splitter" id="splitter"></div>
+
+    <div class="result">
+      <div class="rhead">
+        <span class="stat" id="statInfo">就绪</span>
+        <div class="grow"></div>
+        <button class="btn" id="btnCsv" style="height:26px;font-size:11.5px;padding:0 10px">导出 CSV</button>
+      </div>
+      <div class="rbody" id="rbody">
+        <div class="empty">
+          <div>在左侧展开库与表，或直接输入 SQL</div>
+          <div style="font-size:12px;color:#a3b1c6">执行快捷键：Ctrl + Enter</div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="modal" id="modalDs">
+  <div class="box">
+    <div class="mhead">
+      <h3>数据源管理</h3>
+      <div class="grow"></div>
+      <button class="x" id="closeDs">×</button>
+    </div>
+    <div class="mbody" id="dsBody"></div>
+    <div class="mfoot">
+      <button class="btn" id="btnDsNew">新增数据源</button>
+      <div class="grow"></div>
+      <button class="btn" id="btnDsClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modalPwd">
+  <div class="box" style="max-width:430px">
+    <div class="mhead">
+      <h3>修改口令</h3>
+      <div class="grow"></div>
+      <button class="x" id="closePwd">×</button>
+    </div>
+    <div class="mbody">
+      <div class="formgrid">
+        <label>原口令</label><input type="password" id="pwdOld" autocomplete="off">
+        <label>新口令</label><input type="password" id="pwdNew" autocomplete="off">
+        <label>确认新口令</label><input type="password" id="pwdNew2" autocomplete="off">
+      </div>
+      <div class="testbox" id="pwdMsg"></div>
+    </div>
+    <div class="mfoot">
+      <button class="btn" id="btnPwdCancel">取消</button>
+      <button class="btn run" id="btnPwdSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script>
+(function () {
+  "use strict";
+  var BASE = (window.__BASE__ || "").replace(/\/+$/, "");
+  var VERSION = window.__VERSION__ || "";
+  var $ = function (id) { return document.getElementById(id); };
+
+  var state = {
+    cfg: null, databases: [], drivers: [], defaultDb: "", db: "",
+    schemas: [], overview: null, expanded: {}, currentSchema: "",
+    lastResult: null, editingKey: null, busy: false
+  };
+
+  function url(p) { return BASE + p; }
+  function enc(s) { return encodeURIComponent(s == null ? "" : s); }
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+  function truncate(s, n) {
+    s = String(s == null ? "" : s);
+    return s.length > n ? s.slice(0, n) + "…" : s;
+  }
+  function toast(msg) {
+    var t = $("toast");
+    t.textContent = msg;
+    t.classList.add("show");
+    clearTimeout(t._tm);
+    t._tm = setTimeout(function () { t.classList.remove("show"); }, 2400);
+  }
+
+  function apiGet(p) {
+    return fetch(url(p), { credentials: "same-origin", cache: "no-store" })
+      .then(function (r) {
+        if (r.status === 401) { location.href = url("/login"); return Promise.reject(new Error("未登录")); }
+        return r.json();
+      });
+  }
+  function apiPost(p, body) {
+    return fetch(url(p), {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {})
+    }).then(function (r) {
+      if (r.status === 401) { location.href = url("/login"); return Promise.reject(new Error("未登录")); }
+      return r.json();
+    });
+  }
+  function errMsg(d, fallback) {
+    return (d && d.error && d.error.message) || fallback || "操作失败";
+  }
+
+  /* ---------------- 配置与数据源 ---------------- */
+  function loadConfig() {
+    return apiGet("/api/config").then(function (d) {
+      if (!d.ok) throw new Error(errMsg(d, "配置加载失败"));
+      state.cfg = d;
+      state.databases = d.databases || [];
+      state.defaultDb = d.default_db || (state.databases[0] && state.databases[0].key) || "";
+      state.db = state.db || state.defaultDb;
+      $("verLabel").textContent = "v" + d.version;
+      $("whoLabel").textContent = d.user ? ("已登录：" + d.user) : "";
+      renderDbSelect();
+      renderRoTag();
+      if (!state.databases.length) {
+        $("tree").innerHTML = '<div class="treeload">还没有数据源，点右上角「数据源」添加</div>';
+        return null;
+      }
+      return loadTree();
+    });
+  }
+
+  function currentDs() {
+    var key = state.db;
+    for (var i = 0; i < state.databases.length; i++) {
+      if (state.databases[i].key === key) return state.databases[i];
+    }
+    return state.databases[0] || null;
+  }
+
+  function renderDbSelect() {
+    var sel = $("dbSelect"), ds = currentDs();
+    sel.innerHTML = "";
+    state.databases.forEach(function (d) {
+      var o = document.createElement("option");
+      o.value = d.key;
+      o.textContent = d.label + "  ·  " + d.driver;
+      if (d.key === state.db) o.selected = true;
+      sel.appendChild(o);
+    });
+    $("tagDb").textContent = ds ? ds.label : "无数据源";
+    $("tagDb").title = ds ? (ds.driver + " " + (ds.host || "") + " " + (ds.dbname || "")) : "";
+  }
+
+  function renderRoTag() {
+    var ds = currentDs(), ro = ds ? ds.readonly : true;
+    var el = $("tagRo");
+    el.textContent = ro ? "只读" : "可写";
+    el.className = "tag " + (ro ? "ro" : "rw");
+  }
+
+  /* ---------------- 对象树 ---------------- */
+  function loadTree() {
+    $("tree").innerHTML = '<div class="treeload">正在加载对象…</div>';
+    state.expanded = {};
+    state.currentSchema = "";
+    return apiGet("/api/overview?db=" + enc(state.db)).then(function (d) {
+      if (!d.ok) throw new Error(errMsg(d, "加载对象树失败"));
+      state.overview = d.data || {};
+      state.schemas = state.overview.schemas || [];
+      renderTree();
+    }).catch(function (e) {
+      $("tree").innerHTML = '<div class="treeload" style="color:#f87171">' + esc(e.message) + "</div>";
+    });
+  }
+
+  function renderTree() {
+    var ov = state.overview || {}, h = [];
+    if (ov.server) {
+      h.push('<div class="tnode depth1" style="cursor:default;color:#475569;font-size:11.5px;padding-bottom:8px">' +
+             '<span class="nm" title="' + esc(ov.server) + '">' + esc(truncate(ov.server, 36)) + "</span></div>");
+    }
+    if (!state.schemas.length) {
+      h.push('<div class="treeload">没有可显示的库 / 模式' +
+             (ov.schema_error ? ('：' + esc(truncate(ov.schema_error, 120))) : "") + "</div>");
+    }
+    state.schemas.forEach(function (s) {
+      var node = state.expanded[s];
+      var open = !!node;
+      h.push('<div class="tnode depth1' + (state.currentSchema === s ? " active" : "") +
+             '" data-schema="' + esc(s) + '">' +
+             '<span class="ic">' + (open ? "▾" : "▸") + "</span>" +
+             '<span class="nm" title="' + esc(s) + '">' + esc(s) + "</span></div>");
+      if (!open) return;
+      if (node.loading) {
+        h.push('<div class="treeload" style="padding-left:32px">加载表…</div>');
+        return;
+      }
+      var tbls = node.tables || [];
+      if (!tbls.length) {
+        h.push('<div class="treeload" style="padding-left:32px">（无表）</div>');
+        return;
+      }
+      tbls.forEach(function (t) {
+        h.push('<div class="tnode depth2" data-schema="' + esc(s) + '" data-table="' + esc(t) + '">' +
+               '<span class="ic">▪</span><span class="nm" title="' + esc(t) + '">' + esc(t) + "</span></div>");
+      });
+    });
+    $("tree").innerHTML = h.join("");
+  }
+
+  function toggleSchema(s) {
+    state.currentSchema = s;
+    var node = state.expanded[s];
+    if (node && !node.loading && node.tables) {
+      delete state.expanded[s];
+      renderTree();
+      return;
+    }
+    state.expanded[s] = { loading: true, tables: [] };
+    renderTree();
+    apiGet("/api/tables?db=" + enc(state.db) + "&schema=" + enc(s)).then(function (d) {
+      if (d.ok) {
+        state.expanded[s] = { loading: false, tables: d.data || [] };
+      } else {
+        state.expanded[s] = { loading: false, tables: [] };
+        toast(errMsg(d, "加载表失败"));
+      }
+      renderTree();
+    }).catch(function (e) {
+      state.expanded[s] = { loading: false, tables: [] };
+      renderTree();
+      toast(e.message);
+    });
+  }
+
+  function quoteIdent(s, drv) {
+    if (drv === "mysql") return "`" + s + "`";
+    if (drv === "sqlserver") return "[" + s + "]";
+    return '"' + s + '"';
+  }
+
+  function loadColumns(schema, table) {
+    $("statInfo").textContent = "正在读取表结构…";
+    apiGet("/api/columns?db=" + enc(state.db) + "&schema=" + enc(schema) + "&table=" + enc(table))
+      .then(function (d) {
+        if (!d.ok) {
+          $("statInfo").textContent = "读取失败";
+          $("rbody").innerHTML = '<div class="errbox">' + esc(errMsg(d, "读取表结构失败")) + "</div>";
+          return;
+        }
+        var rows = d.data || [];
+        state.lastResult = { ok: true, columns: ["列名", "类型", "可空"], rows: rows };
+        $("statInfo").innerHTML = "表 <b>" + esc(schema) + "." + esc(table) + "</b> 共 <b>" + rows.length + "</b> 列";
+        renderGrid(["列名", "类型", "可空"], rows);
+      });
+  }
+
+  /* ---------------- 结果渲染 ---------------- */
+  function cellText(v) {
+    if (v === null || v === undefined) return "";
+    return String(v).replace(/\r/g, "").replace(/\n/g, " ↵ ");
+  }
+
+  function renderGrid(cols, rows) {
+    var h = ['<table class="grid"><thead><tr><th class="rownum">#</th>'];
+    cols.forEach(function (c) { h.push("<th>" + esc(c) + "</th>"); });
+    h.push("</tr></thead><tbody>");
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i] || [];
+      h.push('<tr><td class="rownum">' + (i + 1) + "</td>");
+      for (var j = 0; j < cols.length; j++) {
+        var v = r[j];
+        if (v === null || v === undefined) {
+          h.push('<td class="null">NULL</td>');
+        } else if (typeof v === "number") {
+          h.push('<td class="num" title="' + esc(v) + '">' + esc(v) + "</td>");
+        } else {
+          h.push('<td title="' + esc(cellText(v)) + '">' + esc(cellText(v)) + "</td>");
+        }
+      }
+      h.push("</tr>");
+    }
+    h.push("</tbody></table>");
+    $("rbody").innerHTML = h.join("");
+  }
+
+  function renderResult(d) {
+    state.lastResult = d;
+    if (!d.ok) {
+      $("statInfo").textContent = "执行失败";
+      $("rbody").innerHTML = '<div class="errbox">' + esc(errMsg(d, "未知错误")) +
+        (d.error && d.error.stage ? ("\n\n阶段: " + esc(d.error.stage)) : "") + "</div>";
+      return;
+    }
+    var cols = d.columns || [], rows = d.rows || [];
+    $("statInfo").innerHTML = "返回 <b>" + rows.length + "</b> 行" +
+      (d.truncated ? "（已截断）" : "") + " · 耗时 <b>" + (d.elapsed_ms || 0) + "</b> ms";
+    if (!cols.length) {
+      var n = (d.statements || []).length;
+      $("rbody").innerHTML = '<div class="infobox">语句执行成功（' + n + " 条语句，无结果集）</div>";
+      return;
+    }
+    renderGrid(cols, rows);
+  }
+
+  function runSql() {
+    if (state.busy) return;
+    var sql = $("sql").value.trim();
+    if (!sql) { toast("SQL 为空"); return; }
+    if (!state.db) { toast("请先添加并选择数据源"); return; }
+    state.busy = true;
+    $("btnRun").disabled = true;
+    $("statInfo").textContent = "执行中…";
+    $("rbody").innerHTML = '<div class="empty">查询执行中，请稍候…</div>';
+    apiPost("/api/query", {
+      db: state.db, sql: sql,
+      schema: state.currentSchema || undefined
+    }).then(function (d) {
+      renderResult(d);
+    }).catch(function (e) {
+      $("statInfo").textContent = "执行失败";
+      $("rbody").innerHTML = '<div class="errbox">' + esc(e.message) + "</div>";
+    }).then(function () {
+      state.busy = false;
+      $("btnRun").disabled = false;
+    });
+  }
+
+  function csvCell(v) {
+    if (v === null || v === undefined) return "";
+    var s = String(v);
+    if (/[",\r\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+    return s;
+  }
+
+  function exportCsv() {
+    var d = state.lastResult;
+    if (!d || !d.ok || !d.columns || !d.columns.length) { toast("没有可导出的结果集"); return; }
+    var lines = [d.columns.map(csvCell).join(",")];
+    (d.rows || []).forEach(function (r) {
+      lines.push((r || []).map(csvCell).join(","));
+    });
+    var blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "sqlweb_" + state.db + "_" + Date.now() + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1500);
+    toast("已导出 " + (d.rows || []).length + " 行");
+  }
+
+  /* ---------------- 数据源管理弹窗 ---------------- */
+  function openDs() {
+    $("modalDs").classList.add("show");
+    state.editingKey = null;
+    var need = state.drivers.length ? Promise.resolve() : apiGet("/api/drivers").then(function (d) {
+      if (d.ok) state.drivers = d.data || [];
+    });
+    need.then(function () {
+      renderDsList();
+      renderDsForm(null);
+    });
+  }
+
+  function closeDs() {
+    $("modalDs").classList.remove("show");
+  }
+
+  function renderDsList() {
+    var h = ['<div class="dslist">'];
+    if (!state.databases.length) {
+      h.push('<div class="dsrow"><span class="addr">还没有数据源，点下方「新增数据源」</span></div>');
+    }
+    state.databases.forEach(function (d) {
+      var addr;
+      if (d.driver === "sqlite") {
+        addr = d.path || d.dbname || "";
+      } else {
+        addr = (d.host || "") + ":" + (d.port || "") + (d.dbname ? ("/" + d.dbname) : "");
+      }
+      h.push('<div class="dsrow">');
+      h.push('<span class="nm">' + esc(d.label) + "</span>");
+      h.push('<span class="badge">' + esc(d.driver) + "</span>");
+      h.push('<span class="badge ' + (d.readonly ? "ro" : "") + '">' + (d.readonly ? "只读" : "可写") + "</span>");
+      if (d.key === state.defaultDb) h.push('<span class="badge ro">默认</span>');
+      h.push('<span class="addr" title="' + esc(addr) + '">' + esc(addr) + "</span>");
+      h.push('<div class="act">');
+      if (d.key !== state.defaultDb) {
+        h.push('<button class="mini-btn" data-act="def" data-key="' + esc(d.key) + '">设默认</button>');
+      }
+      h.push('<button class="mini-btn" data-act="edit" data-key="' + esc(d.key) + '">编辑</button>');
+      h.push('<button class="mini-btn del" data-act="del" data-key="' + esc(d.key) + '">删除</button>');
+      h.push("</div></div>");
+    });
+    h.push("</div>");
+    $("dsBody").innerHTML = h.join("");
+  }
+
+  function driverOf(name) {
+    for (var i = 0; i < state.drivers.length; i++) {
+      if (state.drivers[i].name === name) return state.drivers[i];
+    }
+    return null;
+  }
+
+  function renderDsForm(ds) {
+    var wrap = $("dsFormWrap");
+    if (!wrap) return;
+    var isEdit = !!ds;
+    var d = ds || { driver: "postgresql", port: 5432, readonly: true };
+    var drv = driverOf(d.driver) || { name: "postgresql", default_port: 5432, available: false, info: "" };
+
+    var opts = state.drivers.map(function (x) {
+      return '<option value="' + esc(x.name) + '"' + (x.name === d.driver ? " selected" : "") + ">" +
+        esc(x.label) + " — " + (x.available ? "可用" : "驱动缺失") + "</option>";
+    }).join("");
+
+    var h = ['<div style="border-top:1px solid #e2e8f0;padding-top:14px">'];
+    h.push('<div style="font-size:13px;font-weight:650;margin-bottom:12px">' +
+           (isEdit ? ("编辑：" + esc(d.label)) : "新增数据源") + "</div>");
+    h.push('<div class="formgrid">');
+
+    h.push("<label>名称</label><input id=" + '"fLabel"' + ' value="' + esc(d.label || "") + '" placeholder="如：生产 PG">');
+
+    h.push("<label>数据库类型</label><select id=" + '"fDriver"' + ">" + opts + "</select>");
+    h.push('<div class="note" id="fDrvNote">' + esc(drv.info || "") + "</div>");
+
+    h.push("<label>主机地址</label><input id=" + '"fHost"' + ' value="' + esc(d.host || "") + '" placeholder="IP 或域名">');
+
+    h.push("<label>端口</label><input id=" + '"fPort"' + ' value="' + esc(d.port == null ? "" : d.port) + '">');
+
+    h.push("<label>用户名</label><input id=" + '"fUser"' + ' value="' + esc(d.user || "") + '" autocomplete="off">');
+
+    h.push("<label>口令</label><input id=" + '"fPasswd"' + ' type="password" value="" autocomplete="new-password" placeholder="' +
+           (isEdit ? "留空则不修改" : "") + '">');
+
+    h.push('<label id="fDbNameLabel">库名 / 服务名</label><input id="' + 'fDbname" value="' + esc(d.dbname || "") +
+           '" placeholder="Oracle 填 SID/Service，SQLServer 填库名">');
+
+    h.push('<label id="fPathLabel">文件路径</label><input id="' + 'fPath" value="' + esc(d.path || "") +
+           '" placeholder="SQLite 数据库文件的绝对路径">');
+
+    h.push("<label>访问模式</label>");
+    h.push('<div><select id="' + 'fReadonly"><option value="1"' + (d.readonly ? " selected" : "") +
+           '>只读（拦截 INSERT/UPDATE/DELETE/DDL）</option><option value="0"' + (d.readonly ? "" : " selected") +
+           ">可写（允许全部语句）</option></select></div>");
+
+    h.push("</div>");
+    h.push('<div class="testbox" id="dsTestBox"></div>');
+    h.push('<div style="margin-top:14px;display:flex;gap:8px">');
+    h.push('<button class="btn" id="btnTestConn">测试连接</button>');
+    h.push('<button class="btn run" id="btnSaveDs">保存数据源</button>');
+    h.push('<button class="btn" id="btnCancelDs">取消</button>');
+    h.push("</div>");
+    h.push("</div>");
+    wrap.innerHTML = h.join("");
+
+    bindFormEvents();
+    syncFormFields();
+  }
+
+  function fb(v) {
+    var el = document.getElementById(v);
+    return el ? el.value : "";
+  }
+
+  function collectDs() {
+    var driver = fb("fDriver");
+    var readonly = fb("fReadonly") === "1";
+    var ds = {
+      label: fb("fLabel").trim(),
+      driver: driver,
+      host: fb("fHost").trim(),
+      port: fb("fPort").trim(),
+      user: fb("fUser").trim(),
+      dbname: fb("fDbname").trim(),
+      path: fb("fPath").trim(),
+      readonly: readonly
+    };
+    var pwd = document.getElementById("fPasswd");
+    if (pwd && pwd.value) ds.password = pwd.value;
+    if (state.editingKey) ds.key = state.editingKey;
+    if (driver === "sqlite") {
+      ds.dbname = ds.path;
+      ds.host = "";
+      ds.port = "";
+    }
+    return ds;
+  }
+
+  function syncFormFields() {
+    var driver = fb("fDriver");
+    var isSql = driver === "sqlite";
+    var isOracle = driver === "oracle";
+    $("fPathLabel").style.display = isSql ? "" : "none";
+    $("fPath").style.display = isSql ? "" : "none";
+    $("fHost").parentNode.style.display = "";
+
+    var hostLabel = $("fHost").previousElementSibling;
+    var portInput = $("fPort");
+    var note = $("fDrvNote");
+    var drv = driverOf(driver);
+
+    if (isSql) {
+      hostLabel.style.display = "none";
+      $("fHost").style.display = "none";
+      portInput.style.display = "none";
+      portInput.previousElementSibling && (portInput.previousElementSibling.style.display = "none");
+      $("fDbNameLabel").style.display = "none";
+      $("fDbname").style.display = "none";
+      $("fUser").style.display = "none";
+      $("fUser").previousElementSibling.style.display = "none";
+      $("fPasswd").style.display = "none";
+      $("fPasswd").previousElementSibling.style.display = "none";
+    } else {
+      hostLabel.style.display = "";
+      $("fHost").style.display = "";
+      portInput.style.display = "";
+      portInput.previousElementSibling && (portInput.previousElementSibling.style.display = "");
+      $("fDbNameLabel").style.display = "";
+      $("fDbname").style.display = "";
+      $("fUser").style.display = "";
+      $("fUser").previousElementSibling.style.display = "";
+      $("fPasswd").style.display = "";
+      $("fPasswd").previousElementSibling.style.display = "";
+      $("fDbNameLabel").textContent = isOracle ? "服务名 / SID" : "库名";
+    }
+    if (drv) {
+      note.textContent = drv.info || "";
+      note.style.color = drv.available ? "#15803d" : "#b91c1c";
+    }
+    if (!isSql && !fb("fPort") && drv && drv.default_port) {
+      $("fPort").value = drv.default_port;
+    }
+  }
+
+  function bindFormEvents() {
+    $("fDriver").addEventListener("change", function () {
+      var drv = driverOf($("fDriver").value);
+      if (drv && drv.default_port !== null && drv.default_port !== undefined) {
+        $("fPort").value = drv.default_port;
+      }
+      syncFormFields();
+    });
+  }
+
+  function testConnection() {
+    var box = $("dsTestBox");
+    var ds = collectDs();
+    if (!ds.label) { toast("请先填写名称"); return; }
+    if (ds.driver !== "sqlite" && !ds.host) { toast("请填写主机地址"); return; }
+    box.className = "testbox";
+    box.textContent = "正在测试连接…";
+    box.style.display = "block";
+    box.style.background = "#f1f5f9";
+    box.style.border = "1px solid #e2e8f0";
+    box.style.color = "#475569";
+    apiPost("/api/ds/test", { ds: ds }).then(function (d) {
+      if (d.ok) {
+        box.className = "testbox ok";
+        box.textContent = "连接成功（" + (d.elapsed_ms || 0) + " ms）\n" +
+          "服务端版本: " + (d.server || "—") + "\n" +
+          "驱动: " + (d.module || "—") + "\n" +
+          "可见库/模式: " + ((d.schemas || []).slice(0, 12).join(", ") || "—");
+      } else {
+        box.className = "testbox err";
+        box.textContent = "连接失败\n" + errMsg(d, "未知错误");
+      }
+    }).catch(function (e) {
+      box.className = "testbox err";
+      box.textContent = "请求失败\n" + e.message;
+    });
+  }
+
+  function saveDs() {
+    var ds = collectDs();
+    if (!ds.label) { toast("请填写名称"); return; }
+    if (ds.driver !== "sqlite" && !ds.host) { toast("请填写主机地址"); return; }
+    apiPost("/api/ds/save", { ds: ds }).then(function (d) {
+      if (!d.ok) { toast(errMsg(d, "保存失败")); return; }
+      toast("已保存，正在刷新…");
+      return loadDatabases().then(function () {
+        state.editingKey = null;
+        renderDsList();
+        renderDsForm(null);
+      });
+    }).catch(function (e) { toast(e.message); });
+  }
+
+  function loadDatabases() {
+    return apiGet("/api/config").then(function (d) {
+      if (!d.ok) return;
+      state.databases = d.databases || [];
+      state.defaultDb = d.default_db || state.defaultDb;
+      if (!state.db && state.databases.length) state.db = state.databases[0].key;
+      var still = false;
+      state.databases.forEach(function (x) { if (x.key === state.db) still = true; });
+      if (!still) state.db = state.defaultDb || (state.databases[0] && state.databases[0].key) || "";
+      renderDbSelect();
+      renderRoTag();
+      return loadTree();
+    });
+  }
+
+  /* ---------------- 绑定 ---------------- */
+  $("dbSelect").addEventListener("change", function () {
+    state.db = this.value;
+    renderRoTag();
+    loadTree();
+  });
+  $("btnRefresh").addEventListener("click", function () { loadTree(); });
+
+  $("tree").addEventListener("click", function (ev) {
+    var el = ev.target;
+    while (el && el !== this) {
+      if (el.classList && el.classList.contains("tnode")) break;
+      el = el.parentNode;
+    }
+    if (!el || el === this) return;
+    var sch = el.getAttribute("data-schema");
+    var tbl = el.getAttribute("data-table");
+    if (tbl) {
+      state.currentSchema = sch;
+      loadColumns(sch, tbl);
+      return;
+    }
+    if (sch) toggleSchema(sch);
+  });
+
+  $("tree").addEventListener("dblclick", function (ev) {
+    var el = ev.target;
+    while (el && el !== this) {
+      if (el.classList && el.classList.contains("tnode")) break;
+      el = el.parentNode;
+    }
+    if (!el || el === this) return;
+    var sch = el.getAttribute("data-schema");
+    var tbl = el.getAttribute("data-table");
+    if (!tbl) return;
+    var ds = currentDs();
+    var q = quoteIdent(sch, ds && ds.driver) + "." + quoteIdent(tbl, ds && ds.driver);
+    var sql = "SELECT * FROM " + q + " LIMIT 100;";
+    $("sql").value = sql;
+    state.currentSchema = sch;
+    runSql();
+  });
+
+  $("btnRun").addEventListener("click", runSql);
+  $("btnClear").addEventListener("click", function () {
+    $("sql").value = "";
+    $("rbody").innerHTML = '<div class="empty">已清空</div>';
+    $("statInfo").textContent = "就绪";
+    state.lastResult = null;
+  });
+  $("btnCsv").addEventListener("click", exportCsv);
+
+  $("sql").addEventListener("keydown", function (ev) {
+    if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") {
+      ev.preventDefault();
+      runSql();
+    }
+  });
+
+  $("btnDs").addEventListener("click", openDs);
+  $("btnDsClose").addEventListener("click", closeDs);
+  $("closeDs").addEventListener("click", closeDs);
+  $("btnDsNew").addEventListener("click", function () {
+    state.editingKey = null;
+    renderDsForm(null);
+  });
+
+  $("modalDs").addEventListener("click", function (ev) {
+    if (ev.target === this) return;
+  });
+
+  /* 数据源操作按钮 */
+  $("dsBody").addEventListener("click", function (ev) {
+    var t = ev.target;
+    if (!t.classList || !t.classList.contains("mini-btn")) return;
+    var act = t.getAttribute("data-act");
+    var key = t.getAttribute("data-key");
+    var ds = null;
+    state.databases.forEach(function (x) { if (x.key === key) ds = x; });
+
+    if (act === "def") {
+      apiPost("/api/ds/default", { key: key }).then(function (d) {
+        if (!d.ok) { toast(errMsg(d, "设置失败")); return; }
+        toast("已设为默认");
+        return loadDatabases().then(function () { renderDsList(); });
+      }).catch(function (e) { toast(e.message); });
+    } else if (act === "edit") {
+      state.editingKey = key;
+      renderDsForm(ds);
+    } else if (act === "del") {
+      if (!confirm("确认删除数据源「" + (ds ? ds.label : key) + "」？")) return;
+      apiPost("/api/ds/delete", { key: key }).then(function (d) {
+        if (!d.ok) { toast(errMsg(d, "删除失败")); return; }
+        toast("已删除");
+        return loadDatabases().then(function () {
+          state.editingKey = null;
+          renderDsList();
+          renderDsForm(null);
+        });
+      }).catch(function (e) { toast(e.message); });
+    }
+  });
+
+  /* 表单底部按钮动态插入 */
+  document.addEventListener("click", function (ev) {
+    var id = ev.target && ev.target.id;
+    if (id === "btnTestConn") testConnection();
+    if (id === "btnSaveDs") saveDs();
+    if (id === "btnCancelDs") {
+      state.editingKey = null;
+      renderDsForm(null);
+    }
+  });
+
+  /* 改密 */
+  function openPwd() {
+    $("pwdOld").value = ""; $("pwdNew").value = ""; $("pwdNew2").value = "";
+    $("pwdMsg").className = "testbox";
+    $("modalPwd").classList.add("show");
+    setTimeout(function () { $("pwdOld").focus(); }, 80);
+  }
+  $("btnPwd").addEventListener("click", openPwd);
+  $("closePwd").addEventListener("click", function () { $("modalPwd").classList.remove("show"); });
+  $("btnPwdCancel").addEventListener("click", function () { $("modalPwd").classList.remove("show"); });
+  $("btnPwdSave").addEventListener("click", function () {
+    var oldp = $("pwdOld").value, np = $("pwdNew").value, np2 = $("pwdNew2").value;
+    var box = $("pwdMsg");
+    if (!oldp) { box.className = "testbox err"; box.textContent = "请填写原口令"; return; }
+    if (np.length < 8) { box.className = "testbox err"; box.textContent = "新口令至少 8 位"; return; }
+    if (np !== np2) { box.className = "testbox err"; box.textContent = "两次输入不一致"; return; }
+    apiPost("/api/password", { old: oldp, "new": np }).then(function (d) {
+      if (!d.ok) { box.className = "testbox err"; box.textContent = errMsg(d, "修改失败"); return; }
+      box.className = "testbox ok";
+      box.textContent = "口令已修改，2 秒后返回登录页";
+      setTimeout(function () { location.href = url("/login"); }, 2000);
+    }).catch(function (e) {
+      box.className = "testbox err";
+      box.textContent = e.message;
+    });
+  });
+
+  /* 退出 */
+  $("btnLogout").addEventListener("click", function () {
+    apiPost("/api/logout", {}).then(function () {
+      location.href = url("/login");
+    }).catch(function () { location.href = url("/login"); });
+  });
+
+  /* 分隔条拖拽 */
+  (function () {
+    var sp = $("splitter"), ed = document.querySelector(".editor");
+    var dragging = false;
+    sp.addEventListener("mousedown", function (e) { dragging = true; e.preventDefault(); });
+    window.addEventListener("mousemove", function (e) {
+      if (!dragging) return;
+      var top = ed.getBoundingClientRect().top;
+      var h = e.clientY - top;
+      if (h < 70) h = 70;
+      var max = window.innerHeight - top - 140;
+      if (h > max) h = max;
+      ed.style.height = h + "px";
+    });
+    window.addEventListener("mouseup", function () { dragging = false; });
+  })();
+
+  /* 启动 */
+  loadConfig().catch(function (e) { toast(e.message); });
+})();
+</script>
+</body>
+</html>

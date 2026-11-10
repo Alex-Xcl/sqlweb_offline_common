@@ -1,0 +1,18 @@
+# 运行时生成，含口令/连接信息，不入库
+config.json
+auth.json
+sqlweb.log
+.sqlweb.pid
+
+# 虚拟环境与缓存
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# 二进制驱动不入库（见 wheels/README.md 的获取方式）
+wheels/*.whl
+
+# 打包产物
+*.tar.gz
+*.zip
