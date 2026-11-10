@@ -40,7 +40,7 @@
       "user": "",
       "password": "",
       "dbname": "",
-      "path": "/data/demo.db",
+      "path": "demo.db",
       "readonly": true
     }
   ],
