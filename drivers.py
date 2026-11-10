@@ -436,8 +436,9 @@ class DamengDriver(Driver):
     modules = ("dmPython", "dmpy")
 
     def _install_hint(self):
-        return ("Linux/Windows 用官方 dmPython（包内 wheels/ 已带）；"
-                "macOS 官方无 wheel，会自动使用纯 Python 驱动 dmpy（pip install dm-pure）")
+        return ("包内 wheels/ 带的是纯 Python 驱动 dm-pure（导入名 dmpy），"
+                "Windows 跑 install.bat -InstallDeps、Linux/macOS 跑 ./install.sh --install-deps 装上即可；"
+                "要用达梦官方 dmPython 二进制驱动，需按本机 Python 版本 pip download 后放进 wheels/ 再装")
 
     def _do_connect(self, cfg, timeout, statement_timeout_ms):
         host = cfg["host"]

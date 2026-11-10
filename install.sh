@@ -82,8 +82,10 @@ if [ "$INSTALL_DEPS" = "1" ]; then
     if [ ! -d wheels ]; then
         echo "  [FAIL] 没有 wheels/ 目录"; exit 1
     fi
+    # --system-site-packages：继承系统 Python 已装的驱动，避免 .venv 成为空环境后
+    # start.sh 切过去把 psycopg2 / pymssql / oracledb 等一并"弄丢"
     if [ ! -d .venv ]; then
-        "$PY" -m venv .venv || { echo "  [FAIL] 创建 .venv 失败（某些精简系统缺 venv 模块）"; exit 1; }
+        "$PY" -m venv --system-site-packages .venv || { echo "  [FAIL] 创建 .venv 失败（某些精简系统缺 venv 模块）"; exit 1; }
     fi
     ./.venv/bin/python -m pip install --upgrade pip >/dev/null 2>&1 || true
     ./.venv/bin/python -m pip install --no-index --find-links=wheels PyMySQL pg8000 dm-pure

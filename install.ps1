@@ -25,6 +25,9 @@ Write-Host "目录: $Dir"
 $py = $null
 $ver = ""
 $cands = @()
+# 已经用 -InstallDeps 建过 .venv 时，优先用它，避免"装好了却检测不到"
+$venvPy = Join-Path $Dir ".venv\Scripts\python.exe"
+if (Test-Path -LiteralPath $venvPy) { $cands += $venvPy }
 if ($env:SQLWEB_PYTHON) { $cands += $env:SQLWEB_PYTHON }
 foreach ($c in @("python3", "python", "py")) {
     $cmd = Get-Command $c -ErrorAction SilentlyContinue
@@ -98,7 +101,9 @@ if ($InstallDeps) {
     Write-Host ""
     Write-Host "离线安装 wheels 内的驱动 (PyMySQL, pg8000, dm-pure)..."
     if (-not (Test-Path "wheels")) { Write-Host "  [FAIL] 没有 wheels 目录"; exit 1 }
-    if (-not (Test-Path ".venv")) { & $py -m venv .venv }
+    # --system-site-packages：让 .venv 继承系统 Python 里已经装好的驱动（psycopg2/pymssql/
+    # oracledb 等）。否则建出来的是个空环境，start.bat 切过去之后这些驱动会全部"变缺失"。
+    if (-not (Test-Path ".venv")) { & $py -m venv --system-site-packages .venv }
     $vpy = Join-Path $Dir ".venv\Scripts\python.exe"
     & $vpy -m pip install --no-index --find-links=wheels PyMySQL pg8000 dm-pure
     if ($LASTEXITCODE -ne 0) { Write-Host "  [FAIL] 离线安装失败"; exit 1 }
