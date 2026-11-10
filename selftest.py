@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """进程内端到端自测（不随包交付，仅开发验证用）"""
-import json, os, sqlite3, sys, threading, time
+import json, os, sqlite3, sys, tempfile, threading, time
 import urllib.request, urllib.error
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -8,9 +8,11 @@ sys.path.insert(0, HERE)
 import sqlweb
 
 PORT = 18899
-DB = "/tmp/sw_selftest.db"
-CFG = "/tmp/sw_selftest_cfg.json"
-AUTHP = "/tmp/sw_selftest_auth.json"
+# 用系统临时目录，Windows 上没有 /tmp
+TMPD = tempfile.gettempdir()
+DB = os.path.join(TMPD, "sw_selftest.db")
+CFG = os.path.join(TMPD, "sw_selftest_cfg.json")
+AUTHP = os.path.join(TMPD, "sw_selftest_auth.json")
 
 for p in (AUTHP, CFG):
     if os.path.exists(p):
@@ -200,12 +202,15 @@ sc, hd, b = call("POST", "/api/ds/test", {"ds": {"driver": "sqlite", "path": "/n
 check("错误路径返回真实报错", sc == 200 and b.get("ok") is False and "不存在" in str(b), str(b)[:250])
 print("       真实报错 =", str(b.get("error", {}).get("message"))[:120])
 
-# 用未安装驱动的库验证"驱动缺失"提示（pymssql 不在 wheels 里，任何环境都缺）
-sc, hd, b = call("POST", "/api/ds/test", {"ds": {"driver": "sqlserver", "host": "127.0.0.1",
+# 用不存在的驱动名验证"驱动缺失/不支持"提示。
+# 原来用 sqlserver，靠的是"pymssql 不在 wheels 里"这个环境假设；
+# 换成 --system-site-packages 的 venv 后系统已装 pymssql，这条就变成了真去连 1433，
+# 断言随之失效。改用未知驱动名，不依赖任何环境。
+sc, hd, b = call("POST", "/api/ds/test", {"ds": {"driver": "nosuchdb", "host": "127.0.0.1",
                                                 "port": 1433, "user": "sa", "password": "x", "label": "t"}},
                  cookie=COOKIE["v"])
-check("驱动缺失时给出可操作提示",
-      sc == 400 and "可用" in str(b), str(b)[:250])
+check("不支持的类型给出可选清单",
+      sc == 400 and "不支持的数据库类型" in str(b) and "postgresql" in str(b), str(b)[:250])
 print("       提示 =", str(b.get("error", {}).get("message"))[:150])
 
 # 驱动已装但连不上时，同样要给明确报错（不能静默）

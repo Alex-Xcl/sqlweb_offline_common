@@ -6,252 +6,362 @@
 <title>SQLWeb 离线控制台</title>
 <style>
   :root{
-    --sidebar:#101827; --sidebar2:#0b1220; --panel:#ffffff; --ink:#0f172a;
-    --muted:#64748b; --line:#e2e8f0; --brand:#2563eb; --ok:#16a34a;
-    --warn:#d97706; --danger:#dc2626; --code:#0f172a;
+    /* 中性阶：纯中性冷灰，不带色味 */
+    --page:#F4F5F7; --bg:#FFFFFF; --panel-2:#F7F8FA;
+    --border:rgba(17,19,24,.09); --border-s:rgba(17,19,24,.16);
+    --ink:#101216; --ink2:#474D55; --muted:#7A828B;
+    /* 唯一强调色：电蓝 */
+    --brand:#3A5CFF; --brand-soft:rgba(58,92,255,.09); --brand-ink:#2743D6;
+    --ok:#1F9254; --ok-soft:rgba(31,146,84,.10); --ok-ink:#157A44;
+    --warn:#C28A00; --warn-soft:rgba(194,138,0,.12); --warn-ink:#8A6100;
+    --danger:#E5484D; --danger-soft:rgba(229,72,77,.10); --danger-ink:#B02A2E;
+    /* 编辑器深色：工作台唯一的暗面 */
+    --ed-bg:#0F1319; --ed-bar:#12181F; --ed-gutter:#0B0E13;
+    --ed-ink:#E6EAF0; --ed-dim:#5D666F; --ed-kw:#7C9CFF;
+    /* 圆角四角色 */
+    --r-shell:14px; --r-card:8px; --r-ctrl:5px; --r-pill:999px;
+    --sh-pop:0 2px 4px rgba(15,19,26,.05), 0 10px 24px -8px rgba(15,19,26,.12);
+    --sh-modal:0 4px 10px rgba(15,19,26,.07), 0 24px 56px -12px rgba(15,19,26,.18),
+               0 64px 120px -40px rgba(15,19,26,.22);
+    --fm:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --bar:52px;
   }
   *{box-sizing:border-box}
   html,body{height:100%; margin:0}
   body{
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",
     "Hiragino Sans GB","Microsoft YaHei",sans-serif;
-    font-size:13.5px; color:var(--ink); background:#f1f5f9;
+    font-size:13.5px; color:var(--ink2); background:var(--page);
     display:flex; flex-direction:column; height:100vh; overflow:hidden;
+    -webkit-font-smoothing:antialiased;
   }
-  /* ---------- 顶栏 ---------- */
+  .num,.mono{font-family:var(--fm); font-variant-numeric:tabular-nums}
+
+  /* ---------- 顶栏：数据源 / 当前库 两个下拉 ---------- */
   header{
-    height:52px; flex:none; display:flex; align-items:center; gap:14px;
-    padding:0 16px; background:var(--sidebar2); color:#e2e8f0;
-    border-bottom:1px solid #1e293b; z-index:20;
+    height:var(--bar); flex:none; display:flex; align-items:center; gap:14px;
+    padding:0 20px; background:var(--bg); color:var(--ink);
+    border-bottom:1px solid var(--border); z-index:20;
   }
-  header .logo{font-weight:650; font-size:15px; letter-spacing:.3px; white-space:nowrap}
-  header .ver{font-size:11px; color:#64748b; margin-left:-6px; white-space:nowrap}
+  header .logo{font-weight:700; font-size:15px; letter-spacing:-.015em;
+    white-space:nowrap; display:flex; align-items:center; gap:9px}
+  header .logo .sq{
+    width:24px; height:24px; border-radius:6px; background:var(--brand); color:#fff;
+    display:grid; place-items:center; font-family:var(--fm); font-size:9.5px;
+    font-weight:700; letter-spacing:.05em; flex:none;
+  }
+  header .ver{font-size:11px; color:var(--muted); white-space:nowrap;
+    font-family:var(--fm); letter-spacing:.03em}
   header .grow{flex:1}
-  header select{
-    height:30px; border-radius:7px; border:1px solid #334155; background:#1e293b;
-    color:#e2e8f0; padding:0 8px; font-size:12.5px; outline:none; max-width:230px;
-    font-family:inherit;
+  .picks{display:flex; align-items:center; gap:9px; min-width:0}
+  .picks .plb{font-size:11.5px; color:var(--muted); white-space:nowrap; letter-spacing:.02em}
+  .picks .pdiv{width:1px; height:18px; background:var(--border-s); flex:none; margin:0 4px}
+  .picks select{
+    height:30px; min-width:110px; border-radius:var(--r-card);
+    border:1px solid var(--border-s);
+    background:var(--bg); color:var(--ink); padding:0 26px 0 9px; font-size:12.5px;
+    outline:none; max-width:230px; font-family:var(--fm); cursor:pointer;
+    appearance:none; -webkit-appearance:none;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%237A828B' stroke-width='1.4' fill='none' stroke-linecap='round'/></svg>");
+    background-repeat:no-repeat; background-position:right 9px center;
   }
-  header .who{font-size:12px; color:#94a3b8; white-space:nowrap}
+  .picks select:focus{border-color:var(--brand); box-shadow:0 0 0 3px var(--brand-soft)}
+  .picks select:disabled{opacity:.45; cursor:not-allowed}
+  header .who{font-size:12px; color:var(--muted); white-space:nowrap}
   .hbtn{
-    height:30px; padding:0 12px; border-radius:7px; border:1px solid #334155;
-    background:#1e293b; color:#cbd5e1; font-size:12.5px; cursor:pointer;
-    font-family:inherit; white-space:nowrap;
+    height:30px; padding:0 12px; border-radius:var(--r-card);
+    border:1px solid var(--border-s); background:var(--bg); color:var(--ink2);
+    font-size:12.5px; cursor:pointer; font-family:inherit; white-space:nowrap;
+    transition:border-color .12s,color .12s,background .12s;
   }
-  .hbtn:hover{background:#273449; color:#fff}
-  .hbtn.primary{background:var(--brand); border-color:var(--brand); color:#fff}
-  .hbtn.primary:hover{filter:brightness(1.08)}
+  .hbtn:hover{background:var(--panel-2); border-color:var(--brand); color:var(--brand-ink)}
+  .hbtn.primary{background:var(--brand); border-color:var(--brand); color:#fff; font-weight:600}
+  .hbtn.primary:hover{background:#2B49E6; color:#fff}
 
   /* ---------- 主体 ---------- */
   main{flex:1; display:flex; min-height:0}
   aside{
-    width:290px; flex:none; background:var(--sidebar); color:#cbd5e1;
+    width:248px; flex:none; background:var(--bg); color:var(--ink2);
     display:flex; flex-direction:column; min-height:0;
-    border-right:1px solid #1e293b;
+    border-right:1px solid var(--border);
   }
   aside .asec{
-    padding:9px 12px 7px; font-size:11.5px; color:#64748b; letter-spacing:.6px;
-    text-transform:uppercase; border-bottom:1px solid #1e293b; flex:none;
+    padding:9px 14px 8px; font-size:11.5px; color:var(--muted); letter-spacing:.04em;
+    border-bottom:1px solid var(--border); flex:none;
     display:flex; align-items:center; justify-content:space-between;
   }
+  aside .asec .cnt{font-family:var(--fm); color:var(--ink2); margin-left:6px}
   aside .asec .mini{
-    font-size:11px; color:#64748b; cursor:pointer; letter-spacing:0;
-    text-transform:none; padding:2px 6px; border-radius:4px;
+    font-size:11px; color:var(--muted); cursor:pointer; letter-spacing:0;
+    padding:2px 6px; border-radius:var(--r-ctrl);
   }
-  aside .asec .mini:hover{background:#1e293b; color:#94a3b8}
+  aside .asec .mini:hover{background:var(--panel-2); color:var(--brand-ink)}
   .tree{flex:1; overflow:auto; padding:6px 0 20px}
   .tree::-webkit-scrollbar{width:8px}
-  .tree::-webkit-scrollbar-thumb{background:#334155; border-radius:4px}
+  .tree::-webkit-scrollbar-thumb{background:#DCDFE5; border-radius:4px}
+  .tree::-webkit-scrollbar-thumb:hover{background:#C6CAD2}
   .tnode{
-    padding:5px 12px 5px 16px; cursor:pointer; display:flex; align-items:center;
-    gap:7px; font-size:12.8px; line-height:1.5; user-select:none;
+    padding:6px 14px; cursor:pointer; display:flex; align-items:center;
+    gap:8px; font-size:12.8px; line-height:1.5; user-select:none;
+    color:var(--ink2); border-radius:0;
   }
-  .tnode:hover{background:#1a2436}
-  .tnode.active{background:#1e3a8a55; color:#dbeafe}
-  .tnode .ic{width:13px; flex:none; color:#64748b; font-size:11px; text-align:center}
+  .tnode:hover{background:var(--panel-2)}
+  .tnode.active{background:var(--brand-soft); color:var(--brand-ink)}
+  .tnode .ic{width:13px; flex:none; color:var(--muted); font-size:10px; text-align:center}
+  .tnode .ic.ic-db{color:var(--brand)}
   .tnode .nm{overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1}
-  .tnode .cnt{font-size:10.5px; color:#64748b}
-  .tnode.depth1{padding-left:16px}
-  .tnode.depth2{padding-left:32px; font-size:12.4px}
-  .tnode.depth3{padding-left:48px; font-size:12.4px}
-  .tnode.depth3{padding-left:48px; font-size:12.2px; color:#94a3b8}
-  .treeload{padding:8px 16px; font-size:11.5px; color:#475569}
+  .tnode .nm.mono{font-family:var(--fm); font-size:12.2px}
+  .tnode .cnt{font-size:10.5px; color:var(--muted); font-family:var(--fm)}
+  .tnode.depth1{padding-left:14px}
+  .tnode.depth2{padding-left:28px; font-size:12.4px}
+  .tnode.depth3{padding-left:42px; font-size:12.2px}
+  .treeload{padding:8px 16px; font-size:11.5px; color:var(--muted); line-height:1.7}
+  .treeload.bad{color:var(--danger-ink)}
+  .treefoot{flex:none; padding:8px 14px; border-top:1px solid var(--border);
+    font-size:11px; color:var(--muted); font-family:var(--fm);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
 
   /* ---------- 工作区 ---------- */
-  section.ws{flex:1; display:flex; flex-direction:column; min-width:0; background:#f8fafc}
+  section.ws{flex:1; display:flex; flex-direction:column; min-width:0; background:var(--page)}
   .bar{
-    flex:none; display:flex; align-items:center; gap:8px; padding:7px 12px;
-    background:var(--panel); border-bottom:1px solid var(--line);
+    flex:none; display:flex; align-items:center; gap:8px; padding:8px 16px;
+    background:var(--bg); border-bottom:1px solid var(--border);
   }
+  .bar .dbref{
+    font-size:11.5px; padding:2px 9px 2px 8px; border-radius:var(--r-ctrl);
+    background:var(--panel-2); color:var(--ink2); white-space:nowrap;
+    font-family:var(--fm); display:flex; align-items:center; gap:6px;
+  }
+  .bar .dbref::before{content:"▤"; color:var(--brand); font-size:10px}
   .bar .tag{
-    font-size:11.5px; padding:2px 8px; border-radius:5px; background:#eff6ff;
-    color:#1d4ed8; border:1px solid #bfdbfe; white-space:nowrap;
+    font-size:11px; padding:2px 8px; border-radius:var(--r-pill); background:var(--brand-soft);
+    color:var(--brand-ink); border:1px solid transparent; white-space:nowrap;
   }
-  .bar .tag.ro{background:#f0fdf4; color:#15803d; border-color:#bbf7d0}
-  .bar .tag.rw{background:#fef2f2; color:#b91c1c; border-color:#fecaca}
+  .bar .tag.ro{background:var(--ok-soft); color:var(--ok-ink)}
+  .bar .tag.rw{background:var(--danger-soft); color:var(--danger-ink)}
   .bar .grow{flex:1}
   .btn{
-    height:30px; padding:0 13px; border-radius:7px; border:1px solid var(--line);
-    background:#fff; color:#334155; font-size:12.5px; cursor:pointer;
-    font-family:inherit; white-space:nowrap;
+    height:30px; padding:0 13px; border-radius:var(--r-card); border:1px solid var(--border-s);
+    background:var(--bg); color:var(--ink2); font-size:12.5px; cursor:pointer;
+    font-family:inherit; white-space:nowrap; transition:border-color .12s,color .12s;
   }
-  .btn:hover{background:#f8fafc; border-color:#cbd5e1}
+  .btn:hover{background:var(--panel-2); border-color:var(--brand); color:var(--brand-ink)}
   .btn.run{background:var(--brand); border-color:var(--brand); color:#fff; font-weight:600}
-  .btn.run:hover{filter:brightness(1.07)}
-  .btn:disabled{opacity:.55; cursor:not-allowed}
+  .btn.run:hover{background:#2B49E6; color:#fff}
+  .btn:disabled{opacity:.5; cursor:not-allowed}
 
-  .editor{flex:none; height:38%; min-height:120px; display:flex; flex-direction:column; background:#fff}
+  /* 编辑器：工作台唯一的暗面 */
+  .editor{flex:none; height:38%; min-height:120px; display:flex; flex-direction:column;
+    background:var(--ed-bg)}
   .editor textarea{
-    flex:1; width:100%; border:0; outline:none; resize:none; padding:12px 14px;
-    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
-    font-size:13px; line-height:1.65; color:var(--code); tab-size:2;
-    background:#fff;
+    flex:1; width:100%; border:0; outline:none; resize:none; padding:14px 18px;
+    font-family:var(--fm); font-size:13px; line-height:1.8; color:var(--ed-ink);
+    tab-size:2; background:var(--ed-bg); caret-color:var(--brand);
   }
+  .editor textarea::placeholder{color:var(--ed-dim)}
+  .editor textarea::selection{background:rgba(58,92,255,.32)}
   .splitter{
-    height:5px; flex:none; background:#e2e8f0; cursor:row-resize;
-    border-top:1px solid #cbd5e1; border-bottom:1px solid #cbd5e1;
+    height:5px; flex:none; background:var(--border); cursor:row-resize;
+    border:0; transition:background .12s;
   }
-  .splitter:hover{background:#cbd5e1}
+  .splitter:hover{background:var(--brand)}
 
-  .result{flex:1; display:flex; flex-direction:column; min-height:0; background:#fff}
+  .result{flex:1; display:flex; flex-direction:column; min-height:0; background:var(--bg)}
   .rhead{
-    flex:none; display:flex; align-items:center; gap:10px; padding:6px 12px;
-    border-bottom:1px solid var(--line); font-size:12px; color:var(--muted);
-    background:#fbfdff; min-height:34px;
+    flex:none; display:flex; align-items:center; gap:10px; padding:7px 16px;
+    border-bottom:1px solid var(--border); font-size:12px; color:var(--muted);
+    background:var(--bg); min-height:38px;
   }
-  .rhead .stat{white-space:nowrap}
-  .rhead .stat b{color:#0f172a; font-weight:600}
+  .rhead .stat{white-space:nowrap; font-family:var(--fm); font-size:11.5px}
+  .rhead .stat b{color:var(--ink); font-weight:600; font-size:13px}
   .rhead .grow{flex:1}
+  .rhead .vline{width:1px; height:13px; background:var(--border-s); flex:none}
   .rbody{flex:1; overflow:auto; min-height:0}
   .rbody::-webkit-scrollbar{width:10px; height:10px}
-  .rbody::-webkit-scrollbar-thumb{background:#cbd5e1; border-radius:5px}
+  .rbody::-webkit-scrollbar-thumb{background:#DCDFE5; border-radius:5px}
+  .rbody::-webkit-scrollbar-thumb:hover{background:#C6CAD2}
 
-  table.grid{border-collapse:separate; border-spacing:0; font-size:12.5px; min-width:100%;}
+  table.grid{border-collapse:collapse; font-size:12.5px; min-width:100%;}
   table.grid th{
-    position:sticky; top:0; background:#f1f5f9; z-index:2;
-    padding:6px 10px; text-align:left; font-weight:600; color:#334155;
-    border-bottom:1px solid var(--line); border-right:1px solid var(--line);
-    white-space:nowrap;
+    position:sticky; top:0; background:var(--panel-2); z-index:2;
+    padding:0 16px; height:36px; text-align:left; font-weight:600; color:var(--ink);
+    border-bottom:1px solid var(--border); white-space:nowrap;
+    font-family:var(--fm); font-size:11.5px; letter-spacing:.02em;
   }
   table.grid td{
-    padding:5px 10px; border-bottom:1px solid #f1f5f9; border-right:1px solid #f8fafc;
+    padding:0 16px; height:40px; border-bottom:1px solid var(--border);
     white-space:nowrap; max-width:420px; overflow:hidden; text-overflow:ellipsis;
-    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-    color:#1e293b;
+    font-family:var(--fm); font-size:12.5px; color:var(--ink2);
+    font-variant-numeric:tabular-nums;
   }
-  table.grid td.num{text-align:right; color:#0f4c81}
-  table.grid td.null{color:#94a3b8; font-style:italic}
+  table.grid td.num{text-align:right; color:var(--brand-ink); position:relative}
+  table.grid td.num.qty::after{
+    content:""; position:absolute; left:16px; right:16px; bottom:7px; height:2px;
+    width:var(--w,0); max-width:calc(100% - 32px); background:rgba(58,92,255,.22);
+    border-radius:2px; pointer-events:none;
+  }
+  table.grid td.null{color:var(--muted); font-style:italic}
   table.grid td.rownum{
-    position:sticky; left:0; background:#fafbfc; color:#94a3b8; text-align:right;
-    min-width:44px; border-right:1px solid var(--line); z-index:1;
+    position:sticky; left:0; background:var(--panel-2); color:var(--muted); text-align:right;
+    min-width:46px; border-right:1px solid var(--border); z-index:1;
   }
-  table.grid tbody tr:hover td{background:#f8fbff}
-  table.grid tbody tr:hover td.rownum{background:#eef4fd}
+  table.grid tbody tr:hover td{background:var(--panel-2)}
+  table.grid tbody tr:hover td.rownum{background:#F1F3F6}
 
   .empty{
     height:100%; display:flex; align-items:center; justify-content:center;
-    color:#94a3b8; font-size:13px; flex-direction:column; gap:8px; padding:30px;
+    color:var(--muted); font-size:13px; flex-direction:column; gap:8px; padding:30px;
     text-align:center; line-height:1.8;
   }
   .errbox{
-    margin:14px; padding:12px 14px; border-radius:9px; background:#fef2f2;
-    border:1px solid #fecaca; color:#b91c1c; font-size:12.5px; line-height:1.7;
-    font-family:ui-monospace,Menlo,Consolas,monospace; white-space:pre-wrap;
+    margin:16px; padding:12px 14px; border-radius:var(--r-card); background:var(--danger-soft);
+    border:1px solid rgba(229,72,77,.24); color:var(--danger-ink); font-size:12.5px;
+    line-height:1.7; font-family:var(--fm); white-space:pre-wrap;
     word-break:break-word;
   }
   .infobox{
-    margin:14px; padding:12px 14px; border-radius:9px; background:#f0fdf4;
-    border:1px solid #bbf7d0; color:#15803d; font-size:12.5px; line-height:1.7;
+    margin:16px; padding:12px 14px; border-radius:var(--r-card); background:var(--ok-soft);
+    border:1px solid rgba(31,146,84,.22); color:var(--ok-ink); font-size:12.5px; line-height:1.7;
   }
 
   /* ---------- 弹窗 ---------- */
   .modal{
-    position:fixed; inset:0; background:#0b1220cc; display:none;
+    position:fixed; inset:0; background:rgba(15,19,26,.42); display:none;
     align-items:center; justify-content:center; z-index:60; padding:20px;
+    backdrop-filter:blur(2px);
   }
   .modal.show{display:flex}
   .modal .box{
-    background:#fff; border-radius:14px; width:100%; max-width:780px;
+    background:var(--bg); border-radius:var(--r-shell); width:100%; max-width:780px;
     max-height:88vh; display:flex; flex-direction:column;
-    box-shadow:0 30px 70px -20px rgba(0,0,0,.6);
+    box-shadow:var(--sh-modal); border:1px solid var(--border);
   }
   .modal .mhead{
-    flex:none; display:flex; align-items:center; padding:14px 18px;
-    border-bottom:1px solid var(--line); gap:10px;
+    flex:none; display:flex; align-items:center; padding:15px 20px;
+    border-bottom:1px solid var(--border); gap:10px;
   }
-  .modal .mhead h3{margin:0; font-size:15px; font-weight:650}
+  .modal .mhead h3{margin:0; font-size:15px; font-weight:650; color:var(--ink);
+    letter-spacing:-.01em}
   .modal .mhead .grow{flex:1}
   .modal .mhead .x{
     width:28px; height:28px; border:0; background:transparent; cursor:pointer;
-    font-size:18px; color:#64748b; border-radius:6px; line-height:1;
+    font-size:18px; color:var(--muted); border-radius:var(--r-ctrl); line-height:1;
   }
-  .modal .mhead .x:hover{background:#f1f5f9; color:#0f172a}
-  .modal .mbody{flex:1; overflow:auto; padding:16px 18px; min-height:0}
+  .modal .mhead .x:hover{background:var(--panel-2); color:var(--ink)}
+  .modal .mbody{flex:1; overflow:auto; padding:18px 20px; min-height:0}
   .modal .mfoot{
-    flex:none; padding:12px 18px; border-top:1px solid var(--line);
-    display:flex; gap:8px; justify-content:flex-end; background:#fbfdff;
-    border-radius:0 0 14px 14px;
+    flex:none; padding:12px 20px; border-top:1px solid var(--border);
+    display:flex; gap:8px; justify-content:flex-end; background:var(--bg);
+    border-radius:0 0 var(--r-shell) var(--r-shell);
   }
 
-  .dslist{border:1px solid var(--line); border-radius:10px; overflow:hidden}
+  .dslist{border:1px solid var(--border); border-radius:var(--r-card); overflow:hidden}
   .dsrow{
-    display:flex; align-items:center; gap:10px; padding:9px 12px;
-    border-bottom:1px solid #f1f5f9; font-size:12.5px;
+    display:flex; align-items:center; gap:10px; padding:10px 12px;
+    border-bottom:1px solid var(--border); font-size:12.5px;
   }
   .dsrow:last-child{border-bottom:0}
-  .dsrow .nm{font-weight:600; color:#0f172a; min-width:110px}
+  .dsrow .nm{font-weight:600; color:var(--ink); min-width:110px; font-family:var(--fm)}
   .dsrow .badge{
-    font-size:10.5px; padding:2px 7px; border-radius:5px; background:#eff6ff;
-    color:#1d4ed8; border:1px solid #bfdbfe; white-space:nowrap;
+    font-size:10.5px; padding:2px 8px; border-radius:var(--r-pill);
+    background:var(--brand-soft); color:var(--brand-ink); white-space:nowrap;
+    font-family:var(--fm);
   }
-  .dsrow .badge.ro{background:#f0fdf4; color:#15803d; border-color:#bbf7d0}
-  .dsrow .addr{color:#64748b; font-size:11.5px; flex:1; overflow:hidden;
-    text-overflow:ellipsis; white-space:nowrap}
+  .dsrow .badge.ro{background:var(--ok-soft); color:var(--ok-ink)}
+  .dsrow .addr{color:var(--muted); font-size:11.5px; flex:1; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; font-family:var(--fm)}
   .dsrow .act{display:flex; gap:6px; flex:none}
   .mini-btn{
-    height:24px; padding:0 9px; border-radius:6px; border:1px solid var(--line);
-    background:#fff; font-size:11.5px; cursor:pointer; color:#334155; font-family:inherit;
-  }
-  .mini-btn:hover{background:#f8fafc}
-  .mini-btn.del{color:#b91c1c; border-color:#fecaca}
-  .mini-btn.del:hover{background:#fef2f2}
+    height:26px; padding:0 9px; border-radius:var(--r-ctrl); border:1px solid var(--border-s);
+    background:var(--bg); font-size:11.5px; cursor:pointer; color:var(--ink2);
+    font-family:inherit; transition:border-color .12s,color .12s}
+  .mini-btn:hover{background:var(--panel-2); border-color:var(--brand); color:var(--brand-ink)}
+  .mini-btn.del{color:var(--danger-ink); border-color:rgba(229,72,77,.28)}
+  .mini-btn.del:hover{background:var(--danger-soft); border-color:var(--danger)}
 
   .formgrid{display:grid; grid-template-columns:120px 1fr; gap:10px 12px; align-items:center}
-  .formgrid label{font-size:12.5px; color:#334155; font-weight:500}
+  .formgrid label{font-size:12.5px; color:var(--ink2); font-weight:500}
   .formgrid input,.formgrid select{
-    height:34px; border:1px solid var(--line); border-radius:8px; padding:0 10px;
-    font-size:13px; outline:none; background:#f8fafc; font-family:inherit;
-    width:100%;
+    height:34px; border:1px solid var(--border-s); border-radius:var(--r-card);
+    padding:0 10px; font-size:13px; outline:none; background:var(--bg);
+    font-family:inherit; width:100%; color:var(--ink); transition:border-color .12s,box-shadow .12s
   }
-  .formgrid input:focus,.formgrid select:focus{border-color:var(--brand); background:#fff}
+  .formgrid input:focus,.formgrid select:focus{
+    border-color:var(--brand); box-shadow:0 0 0 3px var(--brand-soft)}
   .formgrid .full{grid-column:1 / -1}
   .formgrid .note{grid-column:2; font-size:11.5px; color:var(--muted); margin-top:-6px; line-height:1.5}
   .testbox{
-    margin-top:12px; padding:10px 12px; border-radius:8px; font-size:12.3px;
+    margin-top:12px; padding:10px 12px; border-radius:var(--r-card); font-size:12.3px;
     line-height:1.7; white-space:pre-wrap; word-break:break-word; display:none;
-    font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-family:var(--fm);
   }
-  .testbox.ok{display:block; background:#f0fdf4; border:1px solid #bbf7d0; color:#15803d}
-  .testbox.err{display:block; background:#fef2f2; border:1px solid #fecaca; color:#b91c1c}
+  .testbox.ok{display:block; background:var(--ok-soft); border:1px solid rgba(31,146,84,.22);
+    color:var(--ok-ink)}
+  .testbox.err{display:block; background:var(--danger-soft);
+    border:1px solid rgba(229,72,77,.24); color:var(--danger-ink)}
+
+  /* ---------- 无数据源：引导卡 ---------- */
+  .welcome{
+    flex:1; min-height:0; display:none; align-items:center; justify-content:center;
+    padding:40px 24px; background:var(--page);
+  }
+  body.nosrc .welcome{display:flex}
+  body.nosrc main{display:none}
+  body.nosrc .wcard{display:flex}
+  .wcard{
+    width:100%; max-width:460px; display:none; flex-direction:column; align-items:center;
+    text-align:center; background:var(--bg); border:1px solid var(--border);
+    border-radius:var(--r-shell); padding:40px 36px; box-shadow:var(--sh-pop);
+  }
+  .wcard .wico{
+    width:46px; height:46px; border-radius:var(--r-card); background:var(--brand-soft);
+    display:grid; place-items:center; color:var(--brand); font-size:20px; margin-bottom:18px;
+  }
+  .wcard b{font-size:15.5px; color:var(--ink); font-weight:650; letter-spacing:-.01em}
+  .wcard p{margin-top:10px; font-size:12.5px; color:var(--muted); line-height:1.75}
+  .wcard .wheels{display:flex; gap:10px; margin-top:22px}
+  .wcard .whint{margin-top:22px; display:flex; flex-direction:column; gap:4px;
+    font-family:var(--fm); font-size:11px; color:var(--muted); line-height:1.9}
+  .wcard .whint b{font-size:11px; color:var(--ink2); font-weight:600}
 
   /* toast */
   .toast{
     position:fixed; left:50%; bottom:28px; transform:translateX(-50%) translateY(20px);
-    background:#0f172a; color:#e2e8f0; padding:9px 18px; border-radius:9px;
+    background:var(--ink); color:#E6EAF0; padding:9px 18px; border-radius:var(--r-card);
     font-size:12.8px; opacity:0; pointer-events:none; transition:all .25s; z-index:80;
-    box-shadow:0 10px 30px -10px rgba(0,0,0,.6); max-width:70vw;
+    box-shadow:0 12px 30px -10px rgba(15,19,26,.44); max-width:70vw;
   }
   .toast.show{opacity:1; transform:translateX(-50%) translateY(0)}
+  /* 顶栏收窄：先把不必要的信息退掉，再缩下拉，最后才折行 */
+  @media (max-width:1180px){
+    header .ver{display:none}
+    header .who{display:none}
+    .picks select{max-width:180px}
+  }
+  @media (max-width:900px){
+    header{gap:9px; padding:0 12px}
+    header .logo .sq{display:none}
+    header .logo{font-size:13.5px}
+    .picks .plb{display:none}
+    .picks select{max-width:150px}
+    #btnPwd{display:none}
+  }
 </style>
 </head>
 <body>
 
 <header>
-  <div class="logo">SQLWeb 离线控制台</div>
+  <div class="logo"><span class="sq">SQL</span>SQLWeb</div>
   <div class="ver" id="verLabel"></div>
   <div class="grow"></div>
-  <select id="dbSelect" title="切换数据源"></select>
-  <button class="hbtn" id="btnDs">数据源</button>
+  <div class="picks">
+    <span class="plb">数据源</span>
+    <select id="dbSelect" title="切换数据源"></select>
+    <span class="pdiv"></span>
+    <span class="plb">当前库</span>
+    <select id="libSelect" title="切换当前库"></select>
+  </div>
+  <button class="hbtn" id="btnDs">数据源管理</button>
   <button class="hbtn" id="btnPwd">改密</button>
   <span class="who" id="whoLabel"></span>
   <button class="hbtn" id="btnLogout">退出</button>
@@ -259,15 +369,16 @@
 
 <main>
   <aside>
-    <div class="asec"><span>对象树</span><span class="mini" id="btnRefresh">刷新</span></div>
+    <div class="asec"><span>对象树<span class="cnt" id="treeCnt"></span></span><span class="mini" id="btnRefresh">刷新</span></div>
     <div class="tree" id="tree">
       <div class="treeload">正在加载…</div>
     </div>
+    <div class="treefoot" id="treeFoot"></div>
   </aside>
 
   <section class="ws">
     <div class="bar">
-      <span class="tag" id="tagDb">—</span>
+      <span class="dbref" id="tagDb">—</span>
       <span class="tag ro" id="tagRo">只读</span>
       <div class="grow"></div>
       <button class="btn" id="btnClear">清空</button>
@@ -295,6 +406,21 @@
     </div>
   </section>
 </main>
+
+<div class="welcome" id="welcome">
+  <div class="wcard">
+    <div class="wico">▤</div>
+    <b>还没有配置数据源</b>
+    <p>加一个数据库连接，加完这里会自动列出它的库、schema 和表。支持 PostgreSQL、MySQL、SQL Server、Oracle、达梦、SQLite 六类。</p>
+    <div class="wheels">
+      <button class="btn run" id="btnDsFromWelcome">新增数据源</button>
+    </div>
+    <div class="whint">
+      <span><b>配置写在 config.json</b> · 也可以直接改文件</span>
+      <span><b>驱动没装的话</b> · 界面会告诉你要装哪一个</span>
+    </div>
+  </div>
+</div>
 
 <div class="modal" id="modalDs">
   <div class="box">
@@ -405,9 +531,15 @@
       renderDbSelect();
       renderRoTag();
       if (!state.databases.length) {
-        $("tree").innerHTML = '<div class="treeload">还没有数据源，点右上角「数据源」添加</div>';
+        // 一个源都没有：进引导态，而不是留一个空白工作台或弹错误
+        document.body.classList.add("nosrc");
+        $("tree").innerHTML = '<div class="treeload">还没有数据源</div>';
+        $("treeCnt").textContent = "";
+        $("treeFoot").textContent = "";
+        renderLibSelect();
         return null;
       }
+      document.body.classList.remove("nosrc");
       return loadTree();
     });
   }
@@ -430,8 +562,77 @@
       if (d.key === state.db) o.selected = true;
       sel.appendChild(o);
     });
+    if (!state.databases.length) {
+      // 一个源都没有时，下拉里放一句实话，别留一个空框
+      var o0 = document.createElement("option");
+      o0.value = "";
+      o0.textContent = "未配置数据源";
+      sel.appendChild(o0);
+      sel.disabled = true;
+    } else {
+      sel.disabled = false;
+    }
     $("tagDb").textContent = ds ? ds.label : "无数据源";
     $("tagDb").title = ds ? (ds.driver + " " + (ds.host || "") + " " + (ds.dbname || "")) : "";
+  }
+
+  /* 库分组的规则：系统库单列，其余按首个下划线前的前缀聚成“xx 系列”，
+     没有下划线的散名归到“业务库”。刻意不预取每个库有多少张表 ——
+     PG 没有廉价的“该库有多少表”接口，36 个库逐个连就是 36 次建连，
+     为了一个徽标不值。 */
+  function libGroupOf(name) {
+    if (/^(postgres|template0|template1|master|model|msdb|tempdb)$/i.test(name)) return "系统库";
+    var i = name.indexOf("_");
+    if (i > 0) return name.slice(0, i) + " 系列";
+    return "业务库";
+  }
+
+  function renderLibSelect() {
+    var sel = $("libSelect");
+    if (!sel) return;
+    var libs = state.databasesOfDb || [];
+    sel.innerHTML = "";
+    if (!state.databases.length || !libs.length) {
+      var o0 = document.createElement("option");
+      o0.value = "";
+      o0.textContent = state.databases.length ? "（无库可切换）" : "—";
+      sel.appendChild(o0);
+      sel.disabled = true;
+      return;
+    }
+    sel.disabled = false;
+    var groups = Object.create(null), keys = [];
+    libs.forEach(function (l) {
+      var g = libGroupOf(l);
+      if (!groups[g]) { groups[g] = []; keys.push(g); }
+      groups[g].push(l);
+    });
+    // 业务库 → 各前缀系列 → 系统库，系统库永远押在最后
+    keys.sort(function (a, b) {
+      if (a === "系统库") return 1;
+      if (b === "系统库") return -1;
+      if (a === "业务库") return -1;
+      if (b === "业务库") return 1;
+      return a.localeCompare(b);
+    });
+    keys.forEach(function (g) {
+      var og = document.createElement("optgroup");
+      og.label = g;
+      groups[g].forEach(function (l) {
+        var o = document.createElement("option");
+        o.value = l;
+        o.textContent = l;
+        og.appendChild(o);
+      });
+      sel.appendChild(og);
+    });
+    if (state.database && libs.indexOf(state.database) >= 0) {
+      sel.value = state.database;
+    } else {
+      state.database = sel.options[0] ? sel.options[0].value : "";
+      if (state.database) sel.value = state.database;
+    }
+    sel.title = "当前库：" + (state.database || "—") + "（共 " + libs.length + " 个）";
   }
 
   function renderRoTag() {
@@ -492,10 +693,6 @@
 
   function renderTree() {
     var ov = state.overview || {}, h = [];
-    if (ov.server) {
-      h.push('<div class="tnode depth1" style="cursor:default;color:#475569;font-size:11.5px;padding-bottom:8px">' +
-             '<span class="nm" title="' + esc(ov.server) + '">' + esc(truncate(ov.server, 36)) + "</span></div>");
-    }
 
     // 从 depth 开始渲染 schema 层，表自动落在 depth+1
     function pushSchemas(depth) {
@@ -528,29 +725,30 @@
       });
     }
 
-    var libs = state.databasesOfDb || [];
-    if (libs.length) {
-      // 多库实例（PostgreSQL / SQL Server）：先列库，展开的那一层再列 schema
-      libs.forEach(function (lib) {
-        var active = state.database === lib;
-        h.push('<div class="tnode depth1' + (active ? " active" : "") + '" data-lib="' + esc(lib) + '">' +
-               '<span class="ic">' + (active ? "▾" : "▸") + "</span>" +
-               '<span class="nm" title="' + esc(lib) + '">' + esc(lib) + "</span></div>");
-        if (!active) return;
-        if (ov.database_error) {
-          h.push('<div class="treeload" style="padding-left:32px;color:#f87171">' +
-                 esc(truncate(ov.database_error, 120)) + "</div>");
-        }
-        pushSchemas(2);
-      });
-    } else {
-      if (!state.schemas.length) {
-        h.push('<div class="treeload">没有可显示的库 / 模式' +
-               (ov.schema_error ? ('：' + esc(truncate(ov.schema_error, 120))) : "") + "</div>");
-      }
-      pushSchemas(1);
+    // 库这一层已经搬到顶栏「当前库」下拉，树里只留 schema → 表
+    if (ov.database_error) {
+      h.push('<div class="treeload bad">' + esc(truncate(ov.database_error, 140)) + "</div>");
+    } else if (!state.schemas.length) {
+      h.push('<div class="treeload">没有可显示的模式' +
+             (ov.schema_error ? ('：' + esc(truncate(ov.schema_error, 120))) : "") + "</div>");
     }
+    if (state.schemas.length) pushSchemas(1);
     $("tree").innerHTML = h.join("");
+    // 表数是懒加载出来的，展开哪个 schema 就把它那层的数量记进来
+    var tsum = 0;
+    Object.keys(state.expanded || {}).forEach(function (k) {
+      var nd = state.expanded[k];
+      if (nd && nd.tables) tsum += nd.tables.length;
+    });
+    $("treeCnt").textContent = tsum ? (" · " + tsum) : "";
+    // 树尾交代“这是哪台机器、哪个库”，抬头就知道自己在哪
+    var foot = [];
+    if (ov.server) foot.push(truncate(ov.server, 30));
+    else if (ov.driver) foot.push(ov.driver);
+    if (state.database) foot.push(state.database);
+    $("treeFoot").textContent = foot.join("  ·  ");
+    $("treeFoot").title = ov.server || "";
+    renderLibSelect();
   }
 
   function toggleSchema(s) {
@@ -609,6 +807,19 @@
   }
 
   function renderGrid(cols, rows) {
+    // 每列数值的量级上限：按 log10 归一后给数字画一条长短条，
+    // 一眼看出哪几行是大数。数字本身仍是可选中、可复制的真值。
+    var maxLog = [];
+    for (var j0 = 0; j0 < cols.length; j0++) maxLog[j0] = 0;
+    rows.forEach(function (r) {
+      for (var j1 = 0; j1 < cols.length; j1++) {
+        var v0 = (r || [])[j1];
+        if (typeof v0 === "number" && isFinite(v0) && v0 !== 0) {
+          var l0 = Math.log10(Math.abs(v0));
+          if (l0 > maxLog[j1]) maxLog[j1] = l0;
+        }
+      }
+    });
     var h = ['<table class="grid"><thead><tr><th class="rownum">#</th>'];
     cols.forEach(function (c) { h.push("<th>" + esc(c) + "</th>"); });
     h.push("</tr></thead><tbody>");
@@ -620,7 +831,12 @@
         if (v === null || v === undefined) {
           h.push('<td class="null">NULL</td>');
         } else if (typeof v === "number") {
-          h.push('<td class="num" title="' + esc(v) + '">' + esc(v) + "</td>");
+          var w = 0;
+          if (v !== 0 && isFinite(v) && maxLog[j] > 0) {
+            w = Math.max(6, Math.round((Math.log10(Math.abs(v)) / maxLog[j]) * 100));
+          }
+          h.push('<td class="num' + (w ? " qty" : "") + '" style="--w:' + w + '%" title="' +
+                 esc(v) + '">' + esc(v) + "</td>");
         } else {
           h.push('<td title="' + esc(cellText(v)) + '">' + esc(cellText(v)) + "</td>");
         }
@@ -972,6 +1188,18 @@
     renderRoTag();
     loadTree();
   });
+
+  // 顶栏「当前库」下拉：换库只是临时换连接去读，不写回 config.json
+  $("libSelect").addEventListener("change", function () {
+    var v = this.value;
+    if (!v || v === state.database) return;
+    state.database = v;
+    state.schemas = [];
+    state.expanded = {};
+    state.currentSchema = "";
+    $("tree").innerHTML = '<div class="treeload">正在切换库 ' + esc(v) + " …</div>";
+    loadTree();
+  });
   $("btnRefresh").addEventListener("click", function () { loadTree(); });
 
   $("tree").addEventListener("click", function (ev) {
@@ -1037,6 +1265,7 @@
     state.editingKey = null;
     renderDsForm(null);
   });
+  $("btnDsFromWelcome").addEventListener("click", function () { openDs(); });
 
   $("modalDs").addEventListener("click", function (ev) {
     if (ev.target === this) return;
