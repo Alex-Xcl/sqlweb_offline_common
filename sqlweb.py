@@ -794,6 +794,12 @@ class Handler(BaseHTTPRequestHandler):
             ds = get_db(AppState.cfg, dbkey)
             drv = drivers.get_driver(ds.get("driver"))
 
+            # ?database=<库名> 用同一套地址/口令临时改连到别的库（PostgreSQL / SQL Server
+            # 一个连接只绑一个库，跨库浏览只能换 dbname 重连），不写回 config.json。
+            dbname = (qs.get("database") or [None])[0]
+            if dbname:
+                ds = dict(ds, dbname=dbname)
+
             if path == "/api/overview":
                 return self._json({"ok": True, "db": ds["key"], "data": self._overview(ds, drv)})
             if path == "/api/schemas":
@@ -950,6 +956,10 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             max_rows = 1000
         ds = get_db(AppState.cfg, payload.get("db"))
+        # 跨库查询：前端在对象树里选了别的库时，用同一套地址/口令临时换 dbname 重连
+        dbname = payload.get("database")
+        if dbname:
+            ds = dict(ds, dbname=dbname)
         schema = payload.get("schema") or None
         result = run_query(AppState.cfg, ds, sql, max_rows, schema=schema)
         result["db"] = ds.get("key")

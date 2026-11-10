@@ -73,6 +73,7 @@
   .tnode .cnt{font-size:10.5px; color:#64748b}
   .tnode.depth1{padding-left:16px}
   .tnode.depth2{padding-left:32px; font-size:12.4px}
+  .tnode.depth3{padding-left:48px; font-size:12.4px}
   .tnode.depth3{padding-left:48px; font-size:12.2px; color:#94a3b8}
   .treeload{padding:8px 16px; font-size:11.5px; color:#475569}
 
@@ -346,6 +347,7 @@
 
   var state = {
     cfg: null, databases: [], drivers: [], defaultDb: "", db: "",
+    databasesOfDb: [], database: "", currentDbNode: "",
     schemas: [], overview: null, expanded: {}, currentSchema: "",
     lastResult: null, editingKey: null, busy: false
   };
@@ -440,14 +442,48 @@
   }
 
   /* ---------------- 对象树 ---------------- */
+  function dbQuery(extra) {
+    var q = "/api/overview?db=" + enc(state.db);
+    if (state.database) q += "&database=" + enc(state.database);
+    return q + (extra || "");
+  }
+
   function loadTree() {
     $("tree").innerHTML = '<div class="treeload">正在加载对象…</div>';
     state.expanded = {};
     state.currentSchema = "";
-    return apiGet("/api/overview?db=" + enc(state.db)).then(function (d) {
+    return apiGet(dbQuery()).then(function (d) {
       if (!d.ok) throw new Error(errMsg(d, "加载对象树失败"));
       state.overview = d.data || {};
       state.schemas = state.overview.schemas || [];
+      state.databasesOfDb = state.overview.databases || [];
+      // 首次进来没选库时，对齐到连接实际落在的那个库（dbname 留空时靠 current_database 判断）
+      if (!state.database && state.databasesOfDb.length) {
+        var cur = state.overview.current_database || (currentDs() || {}).dbname;
+        state.database = (cur && state.databasesOfDb.indexOf(cur) >= 0) ? cur : state.databasesOfDb[0];
+      }
+      renderTree();
+    }).catch(function (e) {
+      $("tree").innerHTML = '<div class="treeload" style="color:#f87171">' + esc(e.message) + "</div>";
+    });
+  }
+
+  function toggleDb(lib) {
+    if (state.database === lib) {
+      // 再点一次收回：回到数据源自身连接的那个库
+      state.database = "";
+      loadTree();
+      return;
+    }
+    state.database = lib;
+    state.expanded = {};
+    state.currentSchema = "";
+    $("tree").innerHTML = '<div class="treeload">正在切换库 ' + esc(lib) + " …</div>";
+    apiGet(dbQuery()).then(function (d) {
+      if (!d.ok) throw new Error(errMsg(d, "加载库失败"));
+      state.overview = d.data || {};
+      state.schemas = state.overview.schemas || [];
+      state.databasesOfDb = state.overview.databases || [];
       renderTree();
     }).catch(function (e) {
       $("tree").innerHTML = '<div class="treeload" style="color:#f87171">' + esc(e.message) + "</div>";
@@ -460,32 +496,60 @@
       h.push('<div class="tnode depth1" style="cursor:default;color:#475569;font-size:11.5px;padding-bottom:8px">' +
              '<span class="nm" title="' + esc(ov.server) + '">' + esc(truncate(ov.server, 36)) + "</span></div>");
     }
-    if (!state.schemas.length) {
-      h.push('<div class="treeload">没有可显示的库 / 模式' +
-             (ov.schema_error ? ('：' + esc(truncate(ov.schema_error, 120))) : "") + "</div>");
-    }
-    state.schemas.forEach(function (s) {
-      var node = state.expanded[s];
-      var open = !!node;
-      h.push('<div class="tnode depth1' + (state.currentSchema === s ? " active" : "") +
-             '" data-schema="' + esc(s) + '">' +
-             '<span class="ic">' + (open ? "▾" : "▸") + "</span>" +
-             '<span class="nm" title="' + esc(s) + '">' + esc(s) + "</span></div>");
-      if (!open) return;
-      if (node.loading) {
-        h.push('<div class="treeload" style="padding-left:32px">加载表…</div>');
+
+    // 从 depth 开始渲染 schema 层，表自动落在 depth+1
+    function pushSchemas(depth) {
+      if (!state.schemas.length) {
+        h.push('<div class="treeload" style="padding-left:' + (depth === 1 ? 16 : 32) + 'px">（无模式）</div>');
         return;
       }
-      var tbls = node.tables || [];
-      if (!tbls.length) {
-        h.push('<div class="treeload" style="padding-left:32px">（无表）</div>');
-        return;
-      }
-      tbls.forEach(function (t) {
-        h.push('<div class="tnode depth2" data-schema="' + esc(s) + '" data-table="' + esc(t) + '">' +
-               '<span class="ic">▪</span><span class="nm" title="' + esc(t) + '">' + esc(t) + "</span></div>");
+      state.schemas.forEach(function (s) {
+        var node = state.expanded[s];
+        var open = !!node;
+        h.push('<div class="tnode depth' + depth + (state.currentSchema === s ? " active" : "") +
+               '" data-schema="' + esc(s) + '">' +
+               '<span class="ic">' + (open ? "▾" : "▸") + "</span>" +
+               '<span class="nm" title="' + esc(s) + '">' + esc(s) + "</span></div>");
+        if (!open) return;
+        if (node.loading) {
+          h.push('<div class="treeload" style="padding-left:' + ((depth + 1) * 16) + 'px">加载表…</div>');
+          return;
+        }
+        var tbls = node.tables || [];
+        if (!tbls.length) {
+          h.push('<div class="treeload" style="padding-left:' + ((depth + 1) * 16) + 'px">（无表）</div>');
+          return;
+        }
+        tbls.forEach(function (t) {
+          h.push('<div class="tnode depth' + (depth + 1) + '" data-schema="' + esc(s) +
+                 '" data-table="' + esc(t) + '">' +
+                 '<span class="ic">▪</span><span class="nm" title="' + esc(t) + '">' + esc(t) + "</span></div>");
+        });
       });
-    });
+    }
+
+    var libs = state.databasesOfDb || [];
+    if (libs.length) {
+      // 多库实例（PostgreSQL / SQL Server）：先列库，展开的那一层再列 schema
+      libs.forEach(function (lib) {
+        var active = state.database === lib;
+        h.push('<div class="tnode depth1' + (active ? " active" : "") + '" data-lib="' + esc(lib) + '">' +
+               '<span class="ic">' + (active ? "▾" : "▸") + "</span>" +
+               '<span class="nm" title="' + esc(lib) + '">' + esc(lib) + "</span></div>");
+        if (!active) return;
+        if (ov.database_error) {
+          h.push('<div class="treeload" style="padding-left:32px;color:#f87171">' +
+                 esc(truncate(ov.database_error, 120)) + "</div>");
+        }
+        pushSchemas(2);
+      });
+    } else {
+      if (!state.schemas.length) {
+        h.push('<div class="treeload">没有可显示的库 / 模式' +
+               (ov.schema_error ? ('：' + esc(truncate(ov.schema_error, 120))) : "") + "</div>");
+      }
+      pushSchemas(1);
+    }
     $("tree").innerHTML = h.join("");
   }
 
@@ -499,7 +563,9 @@
     }
     state.expanded[s] = { loading: true, tables: [] };
     renderTree();
-    apiGet("/api/tables?db=" + enc(state.db) + "&schema=" + enc(s)).then(function (d) {
+    var u = "/api/tables?db=" + enc(state.db) + "&schema=" + enc(s);
+    if (state.database) u += "&database=" + enc(state.database);
+    apiGet(u).then(function (d) {
       if (d.ok) {
         state.expanded[s] = { loading: false, tables: d.data || [] };
       } else {
@@ -595,7 +661,8 @@
     $("rbody").innerHTML = '<div class="empty">查询执行中，请稍候…</div>';
     apiPost("/api/query", {
       db: state.db, sql: sql,
-      schema: state.currentSchema || undefined
+      schema: state.currentSchema || undefined,
+      database: state.database || undefined
     }).then(function (d) {
       renderResult(d);
     }).catch(function (e) {
@@ -878,7 +945,14 @@
       if (!state.db && state.databases.length) state.db = state.databases[0].key;
       var still = false;
       state.databases.forEach(function (x) { if (x.key === state.db) still = true; });
-      if (!still) state.db = state.defaultDb || (state.databases[0] && state.databases[0].key) || "";
+      if (!still) {
+        state.db = state.defaultDb || (state.databases[0] && state.databases[0].key) || "";
+        state.database = "";
+        state.databasesOfDb = [];
+        state.schemas = [];
+        state.expanded = {};
+        state.currentSchema = "";
+      }
       renderDbSelect();
       renderRoTag();
       return loadTree();
@@ -888,6 +962,13 @@
   /* ---------------- 绑定 ---------------- */
   $("dbSelect").addEventListener("change", function () {
     state.db = this.value;
+    // 换数据源后库/模式选择全部归零，否则会拿旧库的名字去新源上查
+    state.database = "";
+    state.databasesOfDb = [];
+    state.schemas = [];
+    state.expanded = {};
+    state.currentSchema = "";
+    renderDbSelect();   // 顺带更新编辑区左上角的源标签（原来只刷了"只读"标签，标签会停在旧源）
     renderRoTag();
     loadTree();
   });
@@ -900,8 +981,13 @@
       el = el.parentNode;
     }
     if (!el || el === this) return;
+    var lib = el.getAttribute("data-lib");
     var sch = el.getAttribute("data-schema");
     var tbl = el.getAttribute("data-table");
+    if (lib) {
+      toggleDb(lib);
+      return;
+    }
     if (tbl) {
       state.currentSchema = sch;
       loadColumns(sch, tbl);

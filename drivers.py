@@ -144,6 +144,18 @@ class Driver(object):
         raise NotImplementedError
 
     # ---- 元数据（默认 Oracle 风格，各驱动覆盖）----
+    def databases(self, conn):
+        """同一实例下的库清单。一个连接只绑一个库的驱动（Oracle/达梦/SQLite/MySQL）返回空。
+
+        PostgreSQL、SQL Server 这类"多库实例"返回全部库名，前端据此多渲染一层；
+        不用本方法切换连接本身，只用于导航——真正跨库取数由上层把 dbname 换掉重连。
+        """
+        return []
+
+    def current_database(self, conn):
+        """当前连接实际落在哪个库。dbname 留空时（PG 默认连与用户名同名的库）靠它对齐。"""
+        return ""
+
     def schemas(self, conn):
         cur = conn.cursor()
         try:
@@ -178,8 +190,17 @@ class Driver(object):
         return ""
 
     def overview(self, conn):
-        """对象树顶层：schema 数量 + 默认 schema 的表数量。"""
-        out = {"server": self.server_info(conn), "schemas": [], "table_count": 0}
+        """对象树顶层：库清单 + schema 数量。"""
+        out = {"server": self.server_info(conn), "databases": [], "schemas": [],
+               "table_count": 0, "current_database": ""}
+        try:
+            out["databases"] = self.databases(conn)
+        except Exception as e:
+            out["database_error"] = "%s: %s" % (type(e).__name__, e)
+        try:
+            out["current_database"] = self.current_database(conn) or ""
+        except Exception:
+            pass
         try:
             out["schemas"] = self.schemas(conn)
         except Exception as e:
@@ -212,12 +233,29 @@ class PostgresDriver(Driver):
     def server_info(self, conn):
         return self._scalar(conn, "SELECT version()")
 
+    def current_database(self, conn):
+        return self._scalar(conn, "SELECT current_database()")
+
     def _scalar(self, conn, sql):
         cur = conn.cursor()
         try:
             cur.execute(sql)
             r = cur.fetchone()
             return _to_str(r[0]) if r else ""
+        finally:
+            cur.close()
+
+    def databases(self, conn):
+        # PostgreSQL 一个连接只绑一个库，pg_namespace 只能看到当前库的 schema，
+        # 所以整实例的库清单必须单独从 pg_database 取
+        return self._scalar_list(conn, "SELECT datname FROM pg_database "
+                                 "WHERE datistemplate = false ORDER BY 1")
+
+    def _scalar_list(self, conn, sql):
+        cur = conn.cursor()
+        try:
+            cur.execute(sql)
+            return [_to_str(r[0]) for r in cur.fetchall()]
         finally:
             cur.close()
 
@@ -286,6 +324,15 @@ class MySQLDriver(Driver):
         finally:
             cur.close()
 
+    def current_database(self, conn):
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT DATABASE()")
+            r = cur.fetchone()
+            return _to_str(r[0]) if r and r[0] else ""
+        finally:
+            cur.close()
+
     def schemas(self, conn):
         cur = conn.cursor()
         try:
@@ -341,10 +388,34 @@ class SQLServerDriver(Driver):
         finally:
             cur.close()
 
-    def schemas(self, conn):
+    def databases(self, conn):
+        return self._scalar_list(conn, "SELECT name FROM sys.databases ORDER BY 1")
+
+    def current_database(self, conn):
         cur = conn.cursor()
         try:
-            cur.execute("SELECT name FROM sys.databases ORDER BY 1")
+            cur.execute("SELECT DB_NAME()")
+            r = cur.fetchone()
+            return _to_str(r[0]) if r else ""
+        finally:
+            cur.close()
+
+    def _scalar_list(self, conn, sql):
+        cur = conn.cursor()
+        try:
+            cur.execute(sql)
+            return [_to_str(r[0]) for r in cur.fetchall()]
+        finally:
+            cur.close()
+
+    def schemas(self, conn):
+        # SQL Server 的 schema 属于当前库（dbo/guest…），跨库导航由 databases() + 换 dbname 完成。
+        # 原来这里返回的是 sys.databases，属于把库当 schema，已分开。
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT name FROM sys.schemas "
+                        "WHERE schema_id < 16384 AND name NOT IN ('sys','INFORMATION_SCHEMA') "
+                        "ORDER BY 1")
             return [_to_str(r[0]) for r in cur.fetchall()]
         finally:
             cur.close()
