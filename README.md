@@ -134,22 +134,46 @@ dmpy（dm-pure，第三方纯 Python 实现，MIT，py3-none-any）
 
 ### 4.2 离线安装的驱动（`wheels/`）
 
-包内 `wheels/` 放了 7 个 **`py3-none-any`** 纯 Python 包，共约 715 KB，任何平台任何 Python 3.8+ 都能用：
+包内 `wheels/` 放了 7 个 **`py3-none-any`** 纯 Python 包，共约 470 KB，Linux / Windows / macOS 通用，Python 3.8 ~ 3.13 可装：
 
 ```
-pymysql-1.2.4-py3-none-any.whl           # MySQL
-pg8000-1.31.6-py3-none-any.whl           # PostgreSQL 纯 Python 实现
-dm_pure-1.3.5-py3-none-any.whl           # 达梦纯 Python 实现
-scramp-1.5.0-py3-none-any.whl            # pg8000 依赖
-asn1crypto-1.5.1-py2.py3-none-any.whl    # scramp 依赖
-python_dateutil-4.0.0-py3-none-any.whl   # pg8000 依赖
-tzdata-2026.6-py3-none-any.whl           # dateutil 依赖
+PyMySQL-1.1.1-py3-none-any.whl                    # MySQL
+pg8000-1.30.5-py3-none-any.whl                    # PostgreSQL 纯 Python 实现
+dm_pure-1.3.5-py3-none-any.whl                    # 达梦纯 Python 实现
+scramp-1.4.6-py3-none-any.whl                     # pg8000 依赖（SCRAM 认证）
+asn1crypto-1.5.1-py2.py3-none-any.whl             # scramp 依赖
+python_dateutil-2.9.0.post0-py2.py3-none-any.whl  # pg8000 依赖
+six-1.17.0-py2.py3-none-any.whl                   # dateutil 依赖
 ```
+
+> **版本为什么锁在这里**：`pg8000 1.31+` 把依赖钉成 `scramp==1.5.0`，而 `scramp 1.5.0` 要求 Python ≥ 3.11；`python-dateutil 4.0.0` 同样要求 ≥ 3.11。这两条会让整套 wheel 在 3.8~3.10 上装不进去（`ERROR: Package 'scramp' requires a different Python: 3.10.2 not in '>=3.11'`）。所以锁到 `pg8000 1.30.5 + scramp 1.4.6 + dateutil 2.9.0.post0 + PyMySQL 1.1.1`，这一组的最低要求是 Python 3.8。
 
 覆盖了 SQLite、MySQL、PostgreSQL、达梦四种，**开箱即用**。
 
-SQL Server 和 Oracle 需要二进制 wheel，未放进包内：把它们对应的 wheel 丢进 `wheels/`，再执行一次 `install.sh --install-deps` 即可。
-（`pymssql` 认 cp39+；`oracledb` 认 cp310+。低于这些版本时这两个库不可用，但其它四个库不受影响。）
+SQL Server 和 Oracle 的驱动进不了这个"通用 any"目录——它们**只发平台相关、且按 CPython 版本分开的二进制 wheel**，没有 `py3-none-any`：
+
+| 驱动 | 最新版 | wheel 形态 | 意味着 |
+| --- | --- | --- | --- |
+| `pymssql` | 2.4.6 | `cp39`~`cp315` × {win_amd64, win_arm64, manylinux_x86_64, manylinux_aarch64, musllinux_*, macosx_arm64, macosx_x86_64} | 光一个 Python 版本就要 8 个平台文件，6 个版本合计 40+ |
+| `oracledb` | 26.1.0 | `cp310`~`cp315` × {win32, win_amd64, win_arm64, manylinux2014_x86_64, manylinux2014_aarch64, musllinux_*, macosx_universal2} | 同上，且最低 cp310 |
+
+要开箱支持这两个库，就得按"Python 版本 × 操作系统 × CPU 架构"备一整个矩阵，包体积从几百 KB 涨到数十 MB，而目标机的组合事先并不知道。
+
+**正确做法**：目标机需要这两类库时，在**有网机器**上用**与目标机相同的 Python 版本**下载一次，把 whl 丢进 `wheels/` 再重跑安装：
+
+```bash
+# 在有网机器上（示例：Python 3.10 / Windows）
+python -m pip download -d wheels pymssql oracledb
+```
+
+然后重新安装依赖：
+
+```bash
+./install.sh --install-deps      # Linux / macOS
+.\install.ps1 -InstallDeps       # Windows
+```
+
+界面不会因为缺这两个库而无法启动，只会在对应数据源上提示"驱动缺失"。
 
 ---
 

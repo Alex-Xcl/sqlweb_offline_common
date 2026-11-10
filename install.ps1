@@ -19,19 +19,54 @@ Write-Host "================================================"
 Write-Host "目录: $Dir"
 
 # ---- 1. 找 Python ----
+# 依次尝试 PATH 命令、py 启动器、常见安装目录；每个候选都实际执行探测。
+# 注意：Windows 的 python 可能只是"应用执行别名"（占位），Path/Source 为空或位于
+# WindowsApps，直接调用会弹应用商店，所以必须试跑通过才采用。
 $py = $null
-foreach ($c in @("python", "python3", "py")) {
+$ver = ""
+$cands = @()
+if ($env:SQLWEB_PYTHON) { $cands += $env:SQLWEB_PYTHON }
+foreach ($c in @("python3", "python", "py")) {
     $cmd = Get-Command $c -ErrorAction SilentlyContinue
-    if ($cmd) { $py = $cmd.Source; break }
+    if ($cmd) {
+        $p = $cmd.Path
+        if (-not $p) { $p = $cmd.Source }
+        if (-not $p) { $p = $cmd.Definition }
+        if ($p) { $cands += $p }
+    }
 }
+$cands += @(
+    "D:\Python313\python.exe", "D:\Python312\python.exe", "D:\Python311\python.exe",
+    "D:\Python310\python.exe", "D:\Python39\python.exe", "D:\Python38\python.exe",
+    "C:\Python313\python.exe", "C:\Python312\python.exe", "C:\Python311\python.exe",
+    "C:\Python310\python.exe", "C:\Python39\python.exe", "C:\Python38\python.exe"
+)
+foreach ($v in @("313","312","311","310","39","38")) {
+    $cands += (Join-Path $env:LOCALAPPDATA "Programs\Python\Python$v\python.exe")
+}
+
+foreach ($cand in $cands) {
+    if ([string]::IsNullOrWhiteSpace($cand)) { continue }
+    if ($cand -like "*WindowsApps*") { continue }
+    if (-not (Test-Path -LiteralPath $cand)) { continue }
+    try {
+        $probe = & $cand -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>$null
+        if ($LASTEXITCODE -eq 0 -and "$probe" -match '^\d+\.\d+\.\d+') {
+            $py = $cand
+            $ver = "$probe".Trim()
+            break
+        }
+    } catch {}
+}
+
 if (-not $py) {
     Write-Host ""
-    Write-Host "[FAIL] 找不到 python"
+    Write-Host "[FAIL] 找不到可用的 python"
     Write-Host "       请安装 Python 3.8+ 并在安装时勾选 Add Python to PATH"
+    Write-Host "       也可显式指定：`$env:SQLWEB_PYTHON = 'D:\Python310\python.exe'"
     exit 1
 }
 
-$ver = & $py -c "import sys; print('%d.%d.%d' % sys.version_info[:3])"
 $ok = & $py -c "import sys; print(1 if sys.version_info[:2] >= (3,8) else 0)"
 Write-Host "Python: $ver  ($py)"
 if ($ok -ne "1") {
@@ -50,13 +85,13 @@ Write-Host "  [ok] 程序文件齐全"
 # ---- 3. 驱动探测 ----
 Write-Host ""
 Write-Host "驱动可用性:"
-& $py -c @"
+& $py -c @'
 import sys
 sys.path.insert(0, '.')
 import drivers
 for d in drivers.list_drivers():
     print('  %-12s %-16s %s' % (d['name'], d['label'], d['info']))
-"@
+'@
 
 # ---- 4. 离线装驱动 ----
 if ($InstallDeps) {
@@ -70,13 +105,13 @@ if ($InstallDeps) {
     Write-Host "  [ok] 已装入 .venv"
     Write-Host ""
     Write-Host "安装后驱动可用性:"
-    & $vpy -c @"
+    & $vpy -c @'
 import sys
 sys.path.insert(0, '.')
 import drivers
 for d in drivers.list_drivers():
     print('  %-12s %-16s %s' % (d['name'], d['label'], d['info']))
-"@
+'@
 }
 
 # ---- 5. 配置 ----
