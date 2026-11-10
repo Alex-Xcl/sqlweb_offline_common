@@ -64,17 +64,38 @@ macOS 上双击 `start.command` 同样可以启动。
 
 ### 3.2 Windows
 
+**推荐方式：运行 `install.bat`**。它内部已经带上了执行策略参数，不需要改系统设置：
+
+```bat
+install.bat                          :: 等同 -InstallDeps，装驱动并启动
+install.bat -Check                   :: 只看环境
+install.bat -InstallDeps -Port 8899 -NoStart
+```
+
+也可以用 PowerShell 直接调 `install.ps1`：
+
 ```powershell
-# 解压后进入目录
 .\install.ps1 -Check                        # 只看环境
 .\install.ps1 -InstallDeps                  # 装驱动并启动
 .\install.ps1 -InstallDeps -Port 8899 -NoStart
 ```
 
-或者直接双击 `start.bat`。
+> **遇到「禁止运行脚本」时**：Windows 客户端默认执行策略是 `Restricted`，直接 `.\install.ps1` 会报
+> `无法加载文件 ... 因为在此系统上禁止运行脚本`（`PSSecurityException` / `UnauthorizedAccess`）。
+> 这是 PowerShell 的策略限制，不是脚本本身有问题。三种解法任选其一：
+>
+> ```powershell
+> # 1) 用包装器（推荐，零副作用）
+> .\install.bat -Check
+>
+> # 2) 单次绕过，只影响这一次
+> powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Check
+>
+> # 3) 只对当前用户放开（长期有效，策略改为 RemoteSigned）
+> Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+> ```
 
-> Windows 上 `install.ps1` 若被策略拦截，可先执行：
-> `powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallDeps`
+运行起来之后，双击 `start.bat` 即可启动服务。
 
 ### 3.3 首次启动必做：设置管理员
 
