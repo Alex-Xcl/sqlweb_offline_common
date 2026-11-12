@@ -41,10 +41,12 @@ foreach ($c in @("python3", "python", "py")) {
 $cands += @(
     "D:\Python313\python.exe", "D:\Python312\python.exe", "D:\Python311\python.exe",
     "D:\Python310\python.exe", "D:\Python39\python.exe", "D:\Python38\python.exe",
+    "D:\Python37\python.exe",
     "C:\Python313\python.exe", "C:\Python312\python.exe", "C:\Python311\python.exe",
-    "C:\Python310\python.exe", "C:\Python39\python.exe", "C:\Python38\python.exe"
+    "C:\Python310\python.exe", "C:\Python39\python.exe", "C:\Python38\python.exe",
+    "C:\Python37\python.exe"
 )
-foreach ($v in @("313","312","311","310","39","38")) {
+foreach ($v in @("313","312","311","310","39","38","37")) {
     $cands += (Join-Path $env:LOCALAPPDATA "Programs\Python\Python$v\python.exe")
 }
 
@@ -65,19 +67,19 @@ foreach ($cand in $cands) {
 if (-not $py) {
     Write-Host ""
     Write-Host "[FAIL] 找不到可用的 python"
-    Write-Host "       请安装 Python 3.8+ 并在安装时勾选 Add Python to PATH"
+    Write-Host "       请安装 Python 3.7+ 并在安装时勾选 Add Python to PATH"
     Write-Host "       也可显式指定：`$env:SQLWEB_PYTHON = 'D:\Python310\python.exe'"
     exit 1
 }
 
-$ok = & $py -c "import sys; print(1 if sys.version_info[:2] >= (3,8) else 0)"
+$ok = & $py -c "import sys; print(1 if sys.version_info[:2] >= (3,7) else 0)"
 Write-Host "Python: $ver  ($py)"
 if ($ok -ne "1") {
     Write-Host ""
-    Write-Host "[FAIL] 需要 Python 3.8 及以上，当前 $ver"
+    Write-Host "[FAIL] 需要 Python 3.7 及以上，当前 $ver"
     exit 1
 }
-Write-Host "  [ok] Python 版本满足要求 (>=3.8)"
+Write-Host "  [ok] Python 版本满足要求 (>=3.7)"
 
 # ---- 2. 文件完整性 ----
 foreach ($f in @("sqlweb.py","drivers.py","auth.py","captcha.py","redis_panel.py","index.html","login.html")) {
@@ -97,8 +99,13 @@ for d in drivers.list_drivers():
 '@
 
 # ---- 4. 离线装驱动 ----
+# 包内 vendor/ 是纯 Python 驱动的解包版，任何 3.7+ 解释器都能直接加载，不需要 pip / venv。
+$vendorOk = (Test-Path -LiteralPath "vendor\pg8000") -and (Test-Path -LiteralPath "vendor\dmpy")
 if ($InstallDeps) {
     Write-Host ""
+    if ($vendorOk) {
+        Write-Host "  [ok] 驱动已在包内 vendor/ 就绪，跳过 pip 安装（无需 venv、无需外网）"
+    } else {
     Write-Host "离线安装 wheels 内的驱动 (PyMySQL, pg8000, dm-pure)..."
     if (-not (Test-Path "wheels")) { Write-Host "  [FAIL] 没有 wheels 目录"; exit 1 }
     # --system-site-packages：让 .venv 继承系统 Python 里已经装好的驱动（psycopg2/pymssql/
@@ -117,6 +124,7 @@ import drivers
 for d in drivers.list_drivers():
     print('  %-12s %-16s %s' % (d['name'], d['label'], d['info']))
 '@
+    }
 }
 
 # ---- 5. 配置 ----
