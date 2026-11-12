@@ -27,6 +27,15 @@
 """
 import os
 import sqlite3
+import sys
+
+# 随包携带的纯 Python 驱动（vendor/ 解包版）：目标机可能没有 pip / venv / 外网，
+# 甚至 Python 只有 3.7（pip 会因 pg8000、scramp、dm-pure 声明 Requires-Python>=3.8 而拒装）。
+# 这些包本身是纯 Python 代码，解包后放进 sys.path 即可直接使用。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_VENDOR = os.path.join(_HERE, "vendor")
+if os.path.isdir(_VENDOR) and _VENDOR not in sys.path:
+    sys.path.insert(0, _VENDOR)
 
 DRIVER_NAMES = ("postgresql", "mysql", "sqlserver", "oracle", "dameng", "sqlite")
 
