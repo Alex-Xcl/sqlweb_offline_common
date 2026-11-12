@@ -1,8 +1,8 @@
 # sqlweb_offline_common
 
-通用型离线 SQL 网页控制台。**一套代码，三种操作系统，六种数据库。**
+通用型离线 SQL 网页控制台。**一套代码，三种操作系统，六种数据库，一个 Python 3.7 就能跑。**
 
-为无外网、不能装客户端的运维/实施场景设计：目标机上只要有一个 Python 3.8+，解压即可跑，浏览器打开就能查库。
+为无外网、不能装客户端、不能装 pip 包的运维/实施场景设计：目标机上只要有一个 **Python 3.7 及以上**，解压即可跑，浏览器打开就能查库。
 
 ---
 
@@ -23,41 +23,55 @@
 ## 2. 特性
 
 - **跨平台**：Linux（含麒麟/统信/CentOS/RHEL/Ubuntu）、Windows、macOS。全部纯标准库，不依赖任何 C 扩展
-- **跨数据库**：PostgreSQL、MySQL/MariaDB、SQL Server、Oracle、达梦 DM8、SQLite
+- **跨数据库**：PostgreSQL、MySQL/MariaDB、SQL Server、Oracle、达梦 DM8、SQLite、**Redis**（Redis 在同一个"数据库类型"下拉里，见 5.5）
+- **零依赖部署**：驱动随包放在 `vendor/`，**不需要 pip、不需要 venv、不需要外网**，Python 3.7 ~ 3.13 都直接可用
 - **强制登录**：PBKDF2-HMAC-SHA256（20 万次迭代）+ 会话 Cookie，未登录访问 API 一律 401
 - **动态验证码**：纯标准库手写 PNG（`zlib` + `struct`），不依赖 Pillow，单张 < 2 KB
 - **界面配数据源**：增 / 改 / 删 / 设默认，先测连再保存，保存即热加载，不重启
 - **只读保护**：默认拦截 INSERT / UPDATE / DELETE / DDL，可按数据源单独放开
 - **多库浏览**：PostgreSQL / SQL Server 这类一个实例挂多库的，对象树先列库再列 schema，点库名即换 `dbname` 重连取数（不写回配置）
+- **多账号并发**：一个 `auth.json` 存多个账号，管理员可逐个分配"能看哪几个数据源"；多人不同账号同时用，会话与限速互不影响
+- **可见模式白名单**：每个数据源可配 `visible_schemas`，只把要给人看的库/模式列进对象树（达梦一长串 SYS / SYSDBA / EAL* 全都能藏掉）
+- **Redis 面板**：Redis 既在"新增数据源 → 数据库类型"下拉里（选 Redis 就填主机 / 端口 / 库号 / ACL 用户名，测试连与保存都落到 `config.json` 的 `redis` 段），也保留独立面板：概览（版本 / 内存 / 命中率 / keyspace）、SCAN 浏览 key（带类型与 TTL）、按 key 展开 string / hash / list / set / zset，以及命令框直接执行（只读实例按白名单放行）。管理员可在两处增删改 Redis 实例，并按账号分配可见实例
+- **表名搜索**：对象树顶部输入框，按表名模糊搜（不区分大小写）。已展开的库在本地即时过滤；停顿 350 ms 或回车则跨**所有可见模式**搜表，点结果直接看列、双击直接生成 `SELECT * FROM schema.table`。搜索严格受 `visible_schemas` 白名单约束，没权限的模式不会被搜到
 - **子路径部署**：支持 nginx 反代到 `/sqlweb/` 这类前缀，不需要改端口
 
 ---
 
 ## 3. 快速开始
 
-### 3.1 Linux / macOS
+### 3.1 Linux / 麒麟 / macOS：一条命令
 
 ```bash
-tar -xzf sqlweb_offline_common.tar.gz
-cd sqlweb_offline_common
+tar -xzf sqlweb_offline_common_common-1.3.0.tar.gz
+cd sqlweb_offline_common_common-1.3.0
 
-# 环境检查（不启动）
-./install.sh --check
+./install.sh
+```
 
-# 离线装驱动到 .venv，然后前台启动
-./install.sh --install-deps
+`./install.sh` **不带参数即"一键部署"**：挑解释器 → 自检程序文件 → 探测六种驱动 → 生成 `config.json` → 后台启动 → 打印访问地址和初始化令牌。跑完直接打开浏览器即可。
 
-# 或者：后台启动
-./install.sh --install-deps --background
-./stop.sh          # 停止
-tail -f sqlweb.log # 看日志
+> 如果打包工具丢了执行权限（提示 `Permission denied`），用 `sh install.sh` 同样有效，不影响任何功能。
+
+常用参数：
+
+```bash
+./install.sh              # 一键：检查 + 生成配置 + 后台启动 + 打印地址与令牌
+./install.sh --check      # 只检查环境，不改任何文件（查驱动、查 Python、给建议）
+./install.sh --foreground # 前台启动，Ctrl+C 退出（调试用）
+./install.sh --no-start   # 只准备（生成配置），不启动
+./install.sh --port 8080  # 换端口（同时写回 config.json）
+./install.sh --host 127.0.0.1   # 只监听本机
+
+./stop.sh                 # 停止后台服务
+tail -f sqlweb.log        # 看日志（每次启动会保留上一轮为 sqlweb.log.prev）
 ```
 
 不想用 `install.sh` 也可以：
 
 ```bash
-./start.sh                      # 用 .venv 或系统 python3
-./start.sh --port 8899          # 指定端口
+./start.sh                      # 自动挑 .venv 或系统 python3
+./start.sh --port 8899
 python3 sqlweb.py --config /path/to/config.json
 ```
 
@@ -68,7 +82,7 @@ macOS 上双击 `start.command` 同样可以启动。
 **推荐方式：运行 `install.bat`**。它内部已经带上了执行策略参数，不需要改系统设置：
 
 ```bat
-install.bat                          :: 等同 -InstallDeps，装驱动并启动
+install.bat                          :: 检查环境并启动
 install.bat -Check                   :: 只看环境
 install.bat -InstallDeps -Port 8899 -NoStart
 ```
@@ -76,10 +90,11 @@ install.bat -InstallDeps -Port 8899 -NoStart
 也可以用 PowerShell 直接调 `install.ps1`：
 
 ```powershell
-.\install.ps1 -Check                        # 只看环境
-.\install.ps1 -InstallDeps                  # 装驱动并启动
-.\install.ps1 -InstallDeps -Port 8899 -NoStart
+.\install.ps1 -Check
+.\install.ps1 -Port 8899 -NoStart
 ```
+
+`vendor/` 在包里时，`-InstallDeps` 会自动跳过 pip 安装——Windows 同样不需要联网装驱动。
 
 > **遇到「禁止运行脚本」时**：Windows 客户端默认执行策略是 `Restricted`，直接 `.\install.ps1` 会报
 > `无法加载文件 ... 因为在此系统上禁止运行脚本`（`PSSecurityException` / `UnauthorizedAccess`）。
@@ -95,12 +110,46 @@ install.bat -InstallDeps -Port 8899 -NoStart
 > # 3) 只对当前用户放开（长期有效，策略改为 RemoteSigned）
 > Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 > ```
+>
+> 运行起来之后，双击 `start.bat` 即可启动服务。
 
-运行起来之后，双击 `start.bat` 即可启动服务。
+### 3.3 麒麟 V10 / 信创专项
 
-### 3.3 首次启动必做：设置管理员
+麒麟 V10 自带 `python3` 是 **3.7.9**，本版已把门槛降到 3.7，并绕开了 pip 与 venv，所以**直接可用**：
 
-第一次启动**没有** `auth.json`，服务会进入初始化模式，控制台打印：
+```bash
+./kylin.sh            # 一键部署（与 ./install.sh 等价，检测到麒麟会提示）
+./kylin.sh check      # 只检查环境
+```
+
+需要开机自启时（**要 root**）：
+
+```bash
+sudo ./kylin.sh service install     # 注册 systemd 服务、设为开机自启、立即启动
+sudo ./kylin.sh service status      # 查看状态
+sudo ./kylin.sh service uninstall   # 卸载（程序文件与配置保留）
+```
+
+服务名是 `sqlweb-offline`，unit 文件写在 `/etc/systemd/system/sqlweb-offline.service`，日志同时落 `sqlweb.log`。
+
+> 本机没有 systemd（容器环境）时，`service` 子命令会**明确报错并让你改用 `./install.sh`**，不会假装注册成功。
+
+麒麟上的驱动情况（3.7.9 实测）：
+
+| 数据库 | 3.7.9 下 | 说明 |
+| --- | --- | --- |
+| PostgreSQL | ✅ `pg8000` | 纯 Python |
+| MySQL / MariaDB | ✅ `pymysql` | 纯 Python |
+| 达梦 DM8 | ✅ `dmpy`（dm-pure） | 纯 Python |
+| SQLite | ✅ 标准库 | 无依赖 |
+| SQL Server | ⚠️ 不可用 | `pymssql` 要求 Python 3.8+ 的二进制 wheel |
+| Oracle | ⚠️ 不可用 | `oracledb` 要求 Python 3.8+ 的二进制 wheel |
+
+现场若必须连 SQL Server / Oracle，升级到系统自带的更高版本解释器（如 `python3.8`）即可，程序与包都不用换；或给该解释器预装对应驱动，`drivers.py` 会自动识别。
+
+### 3.4 首次启动必做：设置管理员
+
+第一次启动**没有** `auth.json`，服务会进入初始化模式，控制台（和 `install.sh` 的输出）会打印：
 
 ```
 ================================================================
@@ -132,7 +181,7 @@ install.bat -InstallDeps -Port 8899 -NoStart
 | 达梦 DM8 | `dmPython` → `dmpy`（dm-pure） | 官方二进制 / **纯 Python** | **macOS 只能走 dmpy** |
 | SQLite | 标准库 `sqlite3` | 无 | 全平台 |
 
-### 4.1 达梦在 macOS 上的特殊处理
+### 4.1 达梦在 macOS / Linux 低版本上的特殊处理
 
 达梦官方 `dmPython` **只发 Linux/Windows 的 wheel，且全版本没有 sdist**（PyPI 遍历确认），macOS 上根本装不上；达梦也没有 macOS 版 ODBC 驱动，所以 `pyodbc` 路线同样走不通。
 
@@ -154,23 +203,41 @@ dmpy（dm-pure，第三方纯 Python 实现，MIT，py3-none-any）
 - 参数化插 CLOB 会报 `object of type 'int' has no len()`
 - 占位符出现在 SELECT 列表（如 `SELECT ?, ?+1`）时类型标注有偏差
 
-### 4.2 离线安装的驱动（`wheels/`）
+### 4.2 `vendor/` 是什么，为什么不用 pip
 
-包内 `wheels/` 放了 7 个 **`py3-none-any`** 纯 Python 包，共约 470 KB，Linux / Windows / macOS 通用，Python 3.8 ~ 3.13 可装：
+包内有两套等价的驱动载体：
+
+| 目录 | 形态 | 用途 |
+| --- | --- | --- |
+| `vendor/` | 已经解包好的纯 Python 包（含 `.dist-info`） | **运行时直接 `sys.path` 加载，零安装** —— 默认走这条 |
+| `wheels/` | 10 个 `py3-none-any` whl | 留档 / 需要重装或补齐时用，`install.sh` 会在 vendor 不完整时**就地解包**（只用标准库 `zipfile`，不调 pip） |
+
+为什么不能简单 `pip install`：`pg8000 1.30.5`、`scramp 1.4.6`、`dm_pure 1.3.5` 的元数据都写着 `Requires-Python >=3.8`，而麒麟的 `python3` 是 3.7.9，**pip 会硬拒**。但它们本身都是 `py3-none-any` 纯 Python 代码，解包即可用。
+
+所以本版的组合是：
+
+- `pg8000` 降到 **1.29.8**（声明 `>=3.7`）、`scramp` 降到 **1.4.2**（声明 `>=3.7`），3.7 上 pip 也装得进
+- 补齐 3.7 缺的 `importlib_metadata 4.13.0` + `zipp 3.15.0` + `typing_extensions 4.7.1`（3.7 没有 `importlib.metadata`，scramp 会回退到 `importlib_metadata`，后者又需要 `typing_extensions.Protocol`）
+- `dm_pure 1.3.5` 全版本都写 `>=3.8`，**只能走 vendor 解包**（这正是 vendor 目录存在的主因）
+
+`wheels/` 现有 10 个：
 
 ```
 PyMySQL-1.1.1-py3-none-any.whl                    # MySQL
-pg8000-1.30.5-py3-none-any.whl                    # PostgreSQL 纯 Python 实现
+pg8000-1.29.8-py3-none-any.whl                    # PostgreSQL 纯 Python 实现
 dm_pure-1.3.5-py3-none-any.whl                    # 达梦纯 Python 实现
-scramp-1.4.6-py3-none-any.whl                     # pg8000 依赖（SCRAM 认证）
+scramp-1.4.2-py3-none-any.whl                     # pg8000 依赖（SCRAM 认证）
 asn1crypto-1.5.1-py2.py3-none-any.whl             # scramp 依赖
 python_dateutil-2.9.0.post0-py2.py3-none-any.whl  # pg8000 依赖
 six-1.17.0-py2.py3-none-any.whl                   # dateutil 依赖
+importlib_metadata-4.13.0-py3-none-any.whl        # Python 3.7 补 importlib.metadata
+zipp-3.15.0-py3-none-any.whl                      # importlib_metadata 依赖
+typing_extensions-4.7.1-py3-none-any.whl          # 3.7 补 Protocol
 ```
 
-> **版本为什么锁在这里**：`pg8000 1.31+` 把依赖钉成 `scramp==1.5.0`，而 `scramp 1.5.0` 要求 Python ≥ 3.11；`python-dateutil 4.0.0` 同样要求 ≥ 3.11。这两条会让整套 wheel 在 3.8~3.10 上装不进去（`ERROR: Package 'scramp' requires a different Python: 3.10.2 not in '>=3.11'`）。所以锁到 `pg8000 1.30.5 + scramp 1.4.6 + dateutil 2.9.0.post0 + PyMySQL 1.1.1`，这一组的最低要求是 Python 3.8。
-
 覆盖了 SQLite、MySQL、PostgreSQL、达梦四种，**开箱即用**。
+
+> **版本为什么锁在这里**：`pg8000 1.31+` 把依赖钉成 `scramp==1.5.0`，而 `scramp 1.5.0` 要求 Python ≥ 3.11；`python-dateutil 4.0.0` 同样要求 ≥ 3.11。为了兼容 3.8~3.13 同时兼顾 3.7，锁到 `pg8000 1.29.8 + scramp 1.4.2 + dateutil 2.9.0.post0 + PyMySQL 1.1.1`。
 
 SQL Server 和 Oracle 的驱动进不了这个"通用 any"目录——它们**只发平台相关、且按 CPython 版本分开的二进制 wheel**，没有 `py3-none-any`：
 
@@ -181,19 +248,14 @@ SQL Server 和 Oracle 的驱动进不了这个"通用 any"目录——它们**�
 
 要开箱支持这两个库，就得按"Python 版本 × 操作系统 × CPU 架构"备一整个矩阵，包体积从几百 KB 涨到数十 MB，而目标机的组合事先并不知道。
 
-**正确做法**：目标机需要这两类库时，在**有网机器**上用**与目标机相同的 Python 版本**下载一次，把 whl 丢进 `wheels/` 再重跑安装：
+**正确做法**：目标机需要这两类库时，在**有网机器**上用**与目标机相同的 Python 版本**下载一次，把 whl 丢进 `wheels/`：
 
 ```bash
 # 在有网机器上（示例：Python 3.10 / Windows）
 python -m pip download -d wheels pymssql oracledb
 ```
 
-然后重新安装依赖：
-
-```bash
-./install.sh --install-deps      # Linux / macOS
-.\install.ps1 -InstallDeps       # Windows
-```
+然后重跑一次 `./install.sh`（vendor 不完整时会自动把新 whl 解包进去）；也可以直接 `pip install` 到系统解释器，程序会优先用它。
 
 界面不会因为缺这两个库而无法启动，只会在对应数据源上提示"驱动缺失"。
 
@@ -211,8 +273,8 @@ python -m pip download -d wheels pymssql oracledb
 | 时序侧信道 | 用户名错也跑一次假 PBKDF2，账号是否存在无法通过响应时间判断 |
 | 失败提示 | 用户名错与口令错返回**同一句话** |
 | 会话 | 32 字节随机 token，`httpOnly` + `SameSite=Strict` Cookie；TTL 8 小时，闲置 30 分钟失效；进程内存表，重启全部失效 |
-| 登录限速 | 按 IP，1 分钟内失败 5 次即封 60 秒（HTTP 429） |
-| 改密 | 需原口令；改密成功后**强制注销所有会话** |
+| 登录限速 | 按 **IP + 账号** 计次，1 分钟内失败 5 次即封 60 秒（HTTP 429）；同一出口 IP 的多人互不牵连 |
+| 改密 | 需原口令；改密成功后只注销**该账号**的既有会话 |
 | 初始化 | 首启需控制台一次性令牌，防被抢先设置 |
 
 ### 5.2 验证码
@@ -235,6 +297,76 @@ python -m pip download -d wheels pymssql oracledb
 
 按数据源可单独设 `"readonly": false` 放开写权限。
 
+### 5.4 多账号与可见范围（common-1.1.0 新增）
+
+**账号**：`auth.json` 升级为 v2 多用户格式，一个文件里存多个账号，各自独立 salt / hash / 迭代次数。
+
+旧版单用户 `auth.json` 启动时自动迁移成 `users[0]`（管理员，全部数据源可见），**旧口令继续可用**，下一次写盘时固化为 v2，不需要重新初始化。
+
+| 角色 | 能力 |
+| --- | --- |
+| `admin` 管理员 | 看全部数据源；可管账号、管数据源、改配置 |
+| `user` 普通账号 | 只能看被授权的那几个数据源；其它源界面里不出现，直接调接口返回 403 |
+
+账号管理入口：登录后右上角 **账号** → 新增 / 编辑 / 重设口令 / 删除。
+
+- 用户名唯一，新建时口令至少 8 位
+- 禁止删掉最后一个管理员，也不能删自己
+- 改某账号的口令或授权范围，只注销**该账号**的既有会话；其他人正在用的会话不受影响
+- 普通账号看不到"数据源管理"和"账号"两个入口
+
+**可见模式（只显示选择的那几个库/模式）**：在 **数据源管理 → 编辑 → 可见模式** 填逗号分隔的白名单，例如 `MUAPP,MUCONFIG`。
+对象树、`/api/schemas`、`/api/tables`、`/api/columns` 以及执行 SQL 时传的 `schema` 参数，全部按这张白名单校验。
+
+- 留空 = 全部可见（保持旧行为）
+- 大小写不敏感，`muapp,muconfig` 与 `MUAPP,MUCONFIG` 等价
+- 达梦里"库"就是 schema（即用户名），所以填 `MUAPP,MUCONFIG` 就能把 `SYS / SYSAUDITOR / SYSDBA / SYSSSO / EALDWD / EALEPM / EALODS` 一起藏掉
+- 白名单外的 schema 不是"藏起来但能绕"：带 `schema` 参数读表或执行 SQL 会直接 403
+
+**并发**：每次请求独立建连接、用完即关；服务端多线程处理请求；`config.json` 的写操作（增删改数据源）
+用一把进程内锁串行化。所以多人同时查询互不干扰，有人同时在改数据源也不会读坏配置。
+
+实测：8 线程 × 6 次、两个账号混跑同一数据源，48/48 成功，平均 11 ms，无串号。
+
+### 5.5 Redis 面板与按账号授权（common-1.2.0 新增，common-1.3.0 并入数据源下拉）
+
+Redis 有两个入口，**改的是同一份 `config.json` 的 `redis` 段**：
+
+1. **新增数据源 → 数据库类型 = Redis**（common-1.3.0 起）：字段是主机 / 端口 / 库号 `db` / ACL 用户名 / 口令 / 只读，测试连接与保存直接落到 `redis` 段，实例也列在数据源管理列表里（带 `redis` 角标），可"编辑 / 删除"。ACL 用户名与口令**编辑时留空即沿用原值**。
+2. **顶栏 Redis 按钮**（独立面板，功能更全）：登录后可见，**只有 `redis` 段里有实例、且该账号被授权时才出现**。
+
+| 区域 | 内容 |
+| --- | --- |
+| 实例下拉 | 多实例切换；标签后带 `127.0.0.1:6379 / db0 · 只读` 这类摘要 |
+| 概览 | 版本、角色 / 模式（master / standalone）、已连接客户端、运行天数、已用 / 峰值 / maxmemory、dbN 的 keys 与过期数、DBSIZE、命中 / 未命中、过期 / 淘汰、总命令数、maxmemory 策略 |
+| 浏览 | `SCAN` 匹配（默认 `*`）+ 每批条数（≤500），列出 key / 类型 / TTL（`常驻` 或秒数），超过一批可"继续"翻页 |
+| key 详情 | string 超 4 KB 截断；hash / zset 二维列表；list 带下标；set / stream 等给类型说明 |
+| 命令执行 | 单行命令（`GET user:1`、`HGETALL cfg:app`），返回 JSON 与耗时；`readonly` 实例只放行读命令白名单（GET / TYPE / TTL / SCAN / HGETALL / LRANGE / SMEMBERS / ZRANGE / INFO 等），写命令直接拒绝并给出改法 |
+| 实例配置（仅管理员） | 新增 / 编辑 / 删除实例，**改完立即生效**，不用重启 |
+
+**授权**：管理员在 **账号 → 编辑 → 可见 Redis** 勾选该账号能看哪些实例；不勾=该账号顶栏没有 Redis 按钮，直接调 `/api/redis/*` 返回 403。
+
+- 管理员默认看全部实例，不受勾选限制
+- 每个实例独立 `readonly` 开关；写入需求要显式关掉（界面上就是那个"只读"勾选框）
+- `password` / `username` 只存在服务端 `config.json`，`/api/config` 返回给前端的实例信息不含口令
+
+**接口**：`GET /api/redis/overview|scan|key|info`、`POST /api/redis/run`（以上 5 个为查看与执行），加上新增的 `POST /api/redis/test|save|delete`（仅管理员，在配置写锁内执行）。
+
+### 5.6 左侧对象树按表名搜索（common-1.3.0 新增）
+
+对象树标题下多了一个输入框，两种模式自动切换：
+
+| 触发 | 行为 |
+| --- | --- |
+| 输入 1 个字符 | 只在**已经展开、已经加载过的表**里本地过滤，即时出结果（不连库） |
+| 停顿 350 ms（≥2 字符）或按回车 / 点"搜" | 调 `GET /api/search_tables`，跨当前数据源的**全部可见模式**搜表名，结果按 `schema.table` 扁平列出，并在顶部标出扫了几个模式、命中几张、耗时多少 |
+| `Esc` / 清空输入框 | 退出搜索结果，回到原来的树 |
+
+- 搜索**走同一张 `visible_schemas` 白名单**：白名单外的模式连"扫"都不扫，所以没权限的对象既不会出现在树里，也不会被搜索暴露
+- 命中结果点一下 → 右侧出列结构；双击 → 直接生成 `SELECT * FROM schema.table LIMIT 100` 并执行
+- 每次搜索最多 8 秒、最多 1000 条（默认 300 条，超出即标"已截断"并提前返回），不会因为某个模式卡住把页面拖死
+- 换数据源、换库、点"刷新"都会自动清空搜索词，避免拿旧源的关键字去新源搜
+
 ---
 
 ## 6. 配置
@@ -249,11 +381,23 @@ python -m pip download -d wheels pymssql oracledb
 4. **保存数据源** → 写回 `config.json` 并热加载，**不需要重启**
 5. 可"设默认 / 编辑 / 删除"
 
+> 首次部署生成的 `config.json` 里 `databases` 是**空数组**，登录后界面会直接进入"无数据源"引导态，点一下就能加第一台库。
 > 编辑已有数据源时，口令留空表示**沿用原口令**，不必重新输入。
+
+**加账号**（仅管理员）：右上角 **账号** → **新增账号** → 填用户名、口令，选角色，勾上这个账号能看的数据源 → 保存。
+
+**加 Redis**（仅管理员，两种方式等价）：**新增数据源** → 数据库类型选 **Redis** → 填主机 / 端口 / 库号 / ACL 用户名 /（口令）→ 测试连接 → 保存。也可用顶栏 **Redis** 面板里的"新增实例"，改的是同一份配置。
+普通账号登录后，顶栏数据源下拉里只会出现被授权的源。
+
+**只显示选中的库/模式**：在数据源表单的 **可见模式** 里填逗号分隔的白名单（留空=全部）。
+对达梦这类"一个实例下几十个 schema"的场景，填 `MUAPP,MUCONFIG` 即可，对象树里就只剩这两项。
+
+**加 Redis 实例**（仅管理员）：右上角 **Redis** → 滚到 **Redis 实例配置** → **新增实例** → 填名称、主机、端口、库号、ACL 用户名（Redis 6+ 才需要）、口令，决定是否只读 → 先 **测试连接**（返回版本、角色、dbsize、已用内存）→ **保存**，立即生效不重启。
+口令留空表示沿用原口令；改主机端口和口令时都建议先测连再保存。
 
 ### 6.2 文件配置
 
-`config.json`（由 `config.example.json` 生成）：
+`config.json`（由 `config.example.json` 生成，两者字段一致）：
 
 ```json
 {
@@ -286,7 +430,8 @@ python -m pip download -d wheels pymssql oracledb
       "port": 5236,
       "user": "SYSDBA",
       "password": "***",
-      "readonly": true
+      "readonly": true,
+      "visible_schemas": ["MUAPP", "MUCONFIG"]
     },
     {
       "key": "lite",
@@ -296,7 +441,19 @@ python -m pip download -d wheels pymssql oracledb
       "readonly": true
     }
   ],
-  "redis": []
+  "redis": [
+    {
+      "key": "epm-cache",
+      "label": "生产缓存",
+      "host": "10.0.0.20",
+      "port": 6379,
+      "db": 0,
+      "username": "",
+      "password": "***",
+      "readonly": true,
+      "timeout": 5
+    }
+  ]
 }
 ```
 
@@ -313,6 +470,12 @@ python -m pip download -d wheels pymssql oracledb
 | `databases[].driver` | `postgresql` / `mysql` / `sqlserver` / `oracle` / `dameng` / `sqlite` |
 | `databases[].dbname` | PG / MySQL / SQLServer 填库名；Oracle 填 **服务名或 SID**；达梦留空（用 user 当 schema） |
 | `databases[].path` | SQLite 文件绝对路径（`dbname` 会被自动同步） |
+| `databases[].visible_schemas` | 可见模式白名单，数组或逗号分隔字符串均可；留空/不写=全部可见。大小写不敏感 |
+| `redis` | Redis 实例数组，**为空时顶栏不出现 Redis 按钮**。字段：`key` / `label` / `host` / `port` / `db` / `username` / `password` / `readonly` / `timeout` |
+| `redis[].db` | 库号（0-15），对应 `SELECT n` |
+| `redis[].username` | Redis 6+ ACL 用户名，没有就留空（老版本只认口令） |
+| `redis[].readonly` | 该实例只读：命令框只放行读命令白名单，写命令直接拒绝 |
+| `redis[].timeout` | 连接与单条命令超时（秒），默认 5 |
 
 ---
 
@@ -352,30 +515,46 @@ location /sqlweb/ {
 | 项 | 麒麟版 v2.3 | 本版 common |
 | --- | --- | --- |
 | 数据库 | PG + 达梦（driver 分派写死） | 6 种，独立适配层 |
-| 驱动来源 | 只打包 cp37–cp312 的 Linux wheel | 优先纯 Python，跨平台 |
+| 驱动来源 | 只打包 cp37–cp312 的 Linux wheel | 优先纯 Python，跨平台，且随包 vendor |
 | 登录 | 无 | 强制登录 + 验证码 + 限流 |
 | 数据源 | 改 `config.json` 重启 | 界面增删改 + 测试连接 + 热加载 |
 | 验证码 | 无 | 纯标准库 PNG |
 | 启动预检 | 会去连默认库，连不上拒绝启动 | **不连默认库**，连接按需建立 |
-| Redis 面板 | 有（`/api/redis/*` 5 个接口） | 保留，`redis` 段有配置才启用 |
-| 前端 | 单库 + Redis 双面板 | 多数据源 + 对象树 + 数据源管理 + 改密 |
+| Redis 面板 | 有（`/api/redis/*` 5 个接口，前端面板） | 概览 / SCAN 浏览 / key 详情 / 命令执行，加界面增删改实例与按账号授权 |
+| 前端 | 单库 + Redis 双面板 | 多数据源 + 对象树 + 数据源管理 + 改密 + 账号管理 |
+| 账号 | 无 | 单用户 → 多账号（admin / user）+ 按账号分配数据源 + 并发互不影响 |
+
+### 8.1 升级到 1.3.0（从 1.0.0 / 1.1.0 / 1.2.0 都可以直接升）
+
+1. 停服务（`./stop.sh`，或 systemd `sudo systemctl stop sqlweb-offline`）
+2. 备份整目录（程序目录 + `auth.json` + `config.json`）。**不要把新包解压成一个新目录直接跑**——包里刻意不放 `config.json` / `auth.json`，直接跑会显示"数据源: 0 个"并走首次初始化
+3. 覆盖代码文件：`sqlweb.py`、`auth.py`、`index.html`、`README.md`（`login.html`、`captcha.py`、`drivers.py`、`redis_panel.py` 未变）
+4. **不要删 `auth.json` / `config.json`**：
+   - `auth.json` 从 v1 单用户启动时自动迁到 v2 多用户，旧管理员口令继续可用；v2 文件自动给每个账号补上空的 `allow_redis`（=没有 Redis 权限）
+   - `config.json` 里的老数据源自动补上空的 `visible_schemas`；原有 `redis` 段原样生效，**升级后前端 Redis 面板立即回来**
+   - 1.3.0 没有新增配置字段，旧 `config.json` 直接可用
+5. 起服务（`./start.sh`，生产用 `sudo ./kylin.sh service install` 注册 `sqlweb-offline`）→ 用原管理员口令登录
+6. 校验升级：右上角同时出现 **账号** 与 **Redis** 按钮；**数据源管理 → 新增数据源 → 数据库类型**下拉里出现 **Redis** 一项；对象树标题下出现搜索框
+7. 之后在"数据源管理 → 编辑 → 可见模式"填 `MUAPP,MUCONFIG` 之类的白名单；在"账号"里给同事建普通账号并勾选可见数据源与可见 Redis
 
 ---
 
 ## 9. 目录结构
 
 ```
-sqlweb_offline_common/
+sqlweb_offline_common_common-1.3.0/
 ├── sqlweb.py              主程序：HTTP 路由、认证中间件、数据源 API、查询执行
 ├── drivers.py             多数据库适配层（6 个 Driver 类）
-├── auth.py                AuthStore / SessionManager / RateLimiter / CaptchaStore
+├── auth.py                AuthStore / SessionManager / RateLimiter / CaptchaStore（多账号 v2）
 ├── captcha.py             纯标准库 PNG 验证码
 ├── redis_panel.py         Redis 面板（移植自 v2.3）
 ├── login.html             登录页（含首次初始化引导）
-├── index.html             主界面（对象树 / SQL 编辑器 / 结果表 / 数据源管理 / 改密）
-├── config.example.json    配置模板
-├── wheels/                7 个纯 Python wheel，离线装驱动
-├── install.sh             Linux/macOS 安装脚本
+├── index.html             主界面（对象树 + 表名搜索 / SQL 编辑器 / 结果表 / 数据源管理（含 Redis）/ 改密 / 账号 / Redis 面板）
+├── config.example.json    配置模板（databases 为空，首登后界面新增）
+├── vendor/                纯 Python 驱动解包版（pg8000/pymysql/dmpy/scramp/…），运行时直接加载
+├── wheels/                10 个纯 Python whl，留档与补齐用
+├── install.sh             Linux/麒麟/macOS 安装 + 一键部署
+├── kylin.sh               麒麟 / 信创入口（一键部署 + systemd 服务管理）
 ├── install.ps1            Windows 安装脚本
 ├── start.sh               Linux/macOS 启动
 ├── start.command          macOS 双击启动
@@ -384,20 +563,24 @@ sqlweb_offline_common/
 ├── README.md              本文件
 ├── config.json            （运行后生成，含连接信息，权限 600）
 ├── auth.json              （初始化后生成，含口令哈希，权限 600）
-└── sqlweb.log             （--background 时生成）
+├── sqlweb.log             （后台启动时生成；上一轮为 sqlweb.log.prev）
+└── .sqlweb.pid            （后台启动时的进程号）
 ```
 
 ---
 
 ## 10. 已知限制
 
-- **SQL Server / Oracle 需要二进制 wheel**：包内未带，见 4.2
+- **SQL Server / Oracle 需要二进制 wheel**：包内未带，见 4.2；且在 Python 3.7 上不可用
 - **`dmpy` 的事务语义不完整**：只读查数不受影响；需要事务的场景请用官方 `dmPython`
 - **会话存内存**：重启服务要重新登录（对离线运维工具是有意为之）
 - **仅 HTTP**：不做 TLS。对外暴露请走 nginx + HTTPS，或只绑 `127.0.0.1`
 - **数据源口令明文存 `config.json`**：这是离线内网工具的取舍。文件权限已设 `0600`，但服务器被拿到 root 就等于丢口令。若有更高要求，可改为启动时用环境变量注入
 - **跨库浏览是逐次重连**：PostgreSQL / SQL Server 一个连接只绑一个库，切库靠换 `dbname` 新建连接，切一次多一次建连开销（内网通常 < 0.2 s）。不要在一条 SQL 里跨库 JOIN —— 驱动层不支持，请分成两条查询
 - **MySQL 的库就是 schema**：`information_schema.SCHEMATA` 返回的已经是全部库，所以对象树只显示一层，不再套库节点。Oracle / 达梦的"库"即用户，同理单层
+- **`/etc/systemd/system` 需 root**：`kylin.sh service` 必须用 `sudo`；没有 sudo 的现场直接用 `./install.sh` 后台跑，功能一样
+- **表名搜索是逐模式扫表清单**：命中率高的关键字快（十几毫秒），但数据源里模式特别多、每模式表特别多时会明显变慢。为此加了 8 秒硬上限与 1000 条上限，超时/超量只返回已扫到的部分并在界面标"已截断"——想要全量结果就缩小关键字
+- **Redis 不是 SQL 数据源**：它只出现在"数据源类型"下拉里做配置管理，不进对象树、不能用 SQL 编辑器查询。要看 key 请用顶栏 **Redis** 面板
 
 ---
 
@@ -405,13 +588,18 @@ sqlweb_offline_common/
 
 | 现象 | 处理 |
 | --- | --- |
-| 界面里某库显示"驱动缺失" | 装对应 wheel：`pip install --no-index --find-links=wheels <包名>`；或在 `install.sh --install-deps` 时把 wheel 放进 `wheels/` |
+| 麒麟上 `./install.sh` 报 `需要 Python 3.8 及以上` | 那是旧包。本版门槛是 3.7，重新解压新包即可 |
+| 麒麟上 `./install.sh` 或 `./kylin.sh` 报 `Permission denied` | 解包工具丢了执行位：改跑 `sh install.sh` / `sh kylin.sh`，或在解包后 `chmod +x *.sh` |
+| 界面里六种库**全部**显示"驱动缺失" | 服务跑到了错误的解释器上（常见于 `.venv` 建了一半、或直接用系统 python3 而 vendor 被漏打）。先看启动日志里的 `Python: x.y.z`，确认 vendor 目录在包内，然后删掉 `.venv` 重跑 `./install.sh` |
+| 界面里某库显示"驱动缺失" | vendor 在的话先看解释器版本（3.7 下 SQL Server / Oracle 本就不可用）；否则把对应 whl 放进 `wheels/` 后重跑 `./install.sh` |
 | 登录页提示"验证码已失效" | 验证码 5 分钟过期且一次性，刷新图片重试 |
 | 登录 429 | 同一 IP 1 分钟内失败 5 次被限速，等 60 秒 |
 | 忘记管理员口令 | 删掉 `auth.json` 后重启，回到初始化模式（会打印新的初始化令牌） |
 | 改了 `config.json` 但界面没变 | 界面配置走接口落盘；手改文件需要重启服务。界面里改则不需要 |
-| 达梦在 mac 上报 `ModuleNotFoundError: dmPython` | 装纯 Python 驱动：`pip install dm-pure`，服务会自动降级 |
+| 达梦在 mac 上报 `ModuleNotFoundError: dmPython` | 装纯 Python 驱动：`pip install dm-pure`，服务会自动降级（3.7 上走 vendor 里的 `dmpy`） |
 | Windows 下中文乱码 | 用 `chcp 65001` 或在 PowerShell 里跑；`start.bat` 已内置 |
+| 端口被占、启动后立刻退出 | `./install.sh` 会打印日志尾部；先 `./stop.sh`，或换端口 `./install.sh --port 8898` |
+| systemd 服务起不来 | `journalctl -u sqlweb-offline -n 50`；多半是端口占用或 `config.json` 内容有误 |
 
 ---
 
