@@ -838,10 +838,13 @@
         if (sel.options[r].value === "redis:" + state.redisPick) { sel.selectedIndex = r; break; }
       }
     } else {
+      // state.database 还没定下来时，按数据源自己配的库（dbname）去比对，
+      // 否则首屏会停在整实例库清单的第一项上，显示的和实际连的库不一致
+      var wantLib = state.database || (currentDs() || {}).dbname || "";
       var hit = false;
       for (var i = 0; i < sel.options.length; i++) {
         var op = sel.options[i];
-        if (op.value === state.db && (op.getAttribute("data-db") || "") === (state.database || "")) {
+        if (op.value === state.db && (op.getAttribute("data-db") || "") === wantLib) {
           sel.selectedIndex = i; hit = true; break;
         }
       }
@@ -960,8 +963,13 @@
       });
       sel.appendChild(og);
     });
+    // 没手动切过库时对齐「数据源自己配的那个库」（ds.dbname），
+    // 不然会停在整实例库清单的第一个库上，下拉显示的库名和执行用的库不是一回事
+    var dsDb = (currentDs() || {}).dbname || "";
     if (state.database && libs.indexOf(state.database) >= 0) {
       sel.value = state.database;
+    } else if (dsDb && libs.indexOf(dsDb) >= 0) {
+      sel.value = dsDb;
     } else {
       state.database = sel.options[0] ? sel.options[0].value : "";
       if (state.database) sel.value = state.database;
@@ -1005,6 +1013,7 @@
         state.database = (cur && state.databasesOfDb.indexOf(cur) >= 0) ? cur : state.databasesOfDb[0];
       }
       renderTree();
+      renderDbSelect();
     }).catch(function (e) {
       $("tree").innerHTML = '<div class="treeload" style="color:#f87171">' + esc(e.message) + "</div>";
     });

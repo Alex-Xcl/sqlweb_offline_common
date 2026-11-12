@@ -397,7 +397,7 @@ main ▾ 2
 
 | 驱动 | 对象来源 | 定义来源 | 备注 |
 | --- | --- | --- | --- |
-| PostgreSQL | `pg_class`（r/p/f/v/m/S）+ `pg_proc`（prokind 区分过程/函数） | `pg_get_functiondef` / `pg_get_viewdef` | PG 10 无 `prokind`，自动退回"全部归函数" |
+| PostgreSQL | `pg_class`（r/p/f/v/m/S）+ `pg_proc`（prokind 区分过程/函数）+ `pg_trigger`（`NOT tgisinternal`，排掉外键自动生成的内部触发器） | `pg_get_functiondef`（过程同样适用）/ `pg_get_viewdef` / `pg_get_triggerdef` / `pg_sequence` 读序列参数 | PG 10 无 `prokind`，自动退回"全部归函数"；物化视图按 `relkind='m'` 输出 `CREATE MATERIALIZED VIEW`（不是 `CREATE VIEW`）；PG 9.x 无 `pg_sequence` 视图，序列定义退为空串 |
 | MySQL / MariaDB | `information_schema.TABLES` + `ROUTINES` + `TRIGGERS` | `ROUTINES.ROUTINE_DEFINITION` / `SHOW CREATE VIEW` / `SHOW CREATE TRIGGER` | 过程体需要账号有 `SHOW ROUTINE`/相应权限，否则只能拿到名字 |
 | SQL Server | `sys.objects`（U/V/P/FN/IF/TF/SO/TR/SV） | `sys.sql_modules.definition` | |
 | Oracle | `ALL_OBJECTS`（失败退回 `ALL_TABLES`+`ALL_VIEWS`） | 视图 `ALL_VIEWS.TEXT`；过程/函数/触发器 `ALL_SOURCE` | |
@@ -413,6 +413,29 @@ main ▾ 2
 | `GET /api/catalog?schema=` | 表 + 列的类型字典，供编辑器补全，缓存 300 s |
 
 `GET /api/tables`、`/api/columns` 保留不变（老前端与脚本仍可用）。
+
+**真机实测记录（PostgreSQL 18.6，本机 127.0.0.1:5432 / 库 `sqlweb_objtest` / schema `app`）**
+
+在真库上建齐对象后逐项点验，结果是"六组齐、定义全有值"：
+
+| 对象 | 库里实际对象 | 树里分组 | 点开看到的定义首行 |
+| --- | --- | --- | --- |
+| 表 | `t_user` / `t_order` | 表 2 | 表走"看列结构"（单击出列，双击出 `SELECT … LIMIT 100`） |
+| 视图 | `v_user` / 物化视图 `mv_dept` | 视图 2 | `CREATE OR REPLACE VIEW "app"."v_user" AS …` / `CREATE MATERIALIZED VIEW "app"."mv_dept" AS …` |
+| 存储过程 | `proc_bump(int)`（PG11+ `CREATE PROCEDURE`） | 存储过程 1 | `CREATE OR REPLACE PROCEDURE app.proc_bump(IN p_id integer)` |
+| 函数 | `fn_grade(int)` / 触发器函数 `trg_touch()` | 函数 2 | `CREATE OR REPLACE FUNCTION app.fn_grade(a integer)` |
+| 序列 | `seq_demo` + serial 隐式 `t_user_id_seq` / `t_order_id_seq` | 序列 3 | `CREATE SEQUENCE "app"."seq_demo"` |
+| 触发器 | `trg_user_bi BEFORE INSERT ON app.t_user` | 触发器 1 | `CREATE TRIGGER trg_user_bi BEFORE INSERT ON app.t_user FOR EACH ROW EXECUTE FUNCTION app.trg_touch();` |
+
+实测中修掉的三个 PG 缺陷（都在 `drivers.py`）：
+
+1. **触发器不列出**——原实现只查 `pg_class` + `pg_proc`，触发器在 `pg_trigger` 上，组永远是空的；现按 `tgrelid` 关联所属表并过滤 `tgisinternal`。
+2. **物化视图定义前缀错**——`relkind='m'` 的对象被当成普通视图输出 `CREATE OR REPLACE VIEW`，现按 `relkind` 区分。
+3. **序列没有定义**——现读 `pg_sequence` 的 `seqstart/seqincrement/seqmin/seqmax/seqcache/seqcycle` 拼 `CREATE SEQUENCE`。
+
+顺带修了前端一处显示错位：顶栏"源 + 库"合一下拉在首屏会停在整实例库清单的第一项（如 `HIK_APP`），实际执行的却是数据源自己配的库；现在按 `dbname` 对齐，显示的就是真实连的库。
+
+HTTP 层同时核对：`/api/schemas` 只回白名单里的 `app`，`/api/objects` 六组齐全，六个 `/api/source` 全部有值，`/api/catalog` 4 张表带列，白名单外的 `/api/source?schema=public` 返回 403「模式「public」不在该数据源开放范围内」。
 
 ### 5.8 SQL 编辑器：语法高亮 + 自动联想（common-1.3.0 新增）
 

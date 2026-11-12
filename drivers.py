@@ -801,18 +801,61 @@ def _objects_pg(conn, schema):
                                 "JOIN pg_namespace n ON n.oid = p.pronamespace "
                                 "WHERE n.nspname = %s ORDER BY 1" % quote_literal(schema)):
             out["function"].append(_to_str(name))
+    try:
+        # 触发器挂在 pg_trigger 上（不在 pg_class），必须先按 tgrelid 找到所属表再取 tgname
+        for name, _tbl in _q(conn,
+                             "SELECT t.tgname, c.relname FROM pg_trigger t "
+                             "JOIN pg_class c ON c.oid = t.tgrelid "
+                             "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                             "WHERE n.nspname = %s AND NOT t.tgisinternal "
+                             "ORDER BY 1" % quote_literal(schema)):
+            out["trigger"].append(_to_str(name))
+    except Exception:
+        pass
     return out
 
 
 def _source_pg(conn, schema, name, kind):
+    if kind == "trigger":
+        # pg_get_triggerdef 直接给完整 CREATE TRIGGER，比自己拼 tgtype 位可靠
+        rows = _q(conn, "SELECT pg_get_triggerdef(t.oid, true) FROM pg_trigger t "
+                        "JOIN pg_class c ON c.oid = t.tgrelid "
+                        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "WHERE n.nspname = %s AND t.tgname = %s AND NOT t.tgisinternal "
+                        "ORDER BY t.oid DESC"
+                        % (quote_literal(schema), quote_literal(name)))
+        if not rows:
+            return ""
+        txt = _to_str(rows[0][0]).strip()
+        return txt if txt.endswith(";") else txt + ";"
+    if kind == "sequence":
+        try:
+            rows = _q(conn, "SELECT s.seqstart, s.seqincrement, s.seqmin, s.seqmax, "
+                            "s.seqcache, s.seqcycle FROM pg_sequence s "
+                            "JOIN pg_class c ON c.oid = s.seqrelid "
+                            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                            "WHERE n.nspname = %s AND c.relname = %s"
+                            % (quote_literal(schema), quote_literal(name)))
+        except Exception:
+            # PG 9.x 没有 pg_sequence 视图
+            rows = []
+        if not rows:
+            return ""
+        st, inc, mn, mx, ca, cyc = [_to_str(v) for v in rows[0]]
+        return ('CREATE SEQUENCE "%s"."%s"\n'
+                '    START WITH %s\n    INCREMENT BY %s\n'
+                '    MINVALUE %s\n    MAXVALUE %s\n    CACHE %s%s;'
+                % (schema, name, st, inc, mn, mx, ca, "\n    CYCLE" if ca and cyc in ("t", "true", "1") else ""))
     if kind == "view":
-        rows = _q(conn, "SELECT pg_get_viewdef(c.oid, true) FROM pg_class c "
+        rows = _q(conn, "SELECT c.relkind, pg_get_viewdef(c.oid, true) FROM pg_class c "
                         "JOIN pg_namespace n ON n.oid = c.relnamespace "
                         "WHERE n.nspname = %s AND c.relname = %s"
                         % (quote_literal(schema), quote_literal(name)))
         if not rows:
             return ""
-        return "CREATE OR REPLACE VIEW \"%s\".\"%s\" AS\n%s;" % (schema, name, _to_str(rows[0][0]))
+        rk = _to_str(rows[0][0])
+        head = "CREATE MATERIALIZED VIEW" if rk == "m" else "CREATE OR REPLACE VIEW"
+        return '%s "%s"."%s" AS\n%s;' % (head, schema, name, _to_str(rows[0][1]))
     rows = _q(conn, "SELECT pg_get_functiondef(p.oid) FROM pg_proc p "
                     "JOIN pg_namespace n ON n.oid = p.pronamespace "
                     "WHERE n.nspname = %s AND p.proname = %s ORDER BY p.oid DESC"
