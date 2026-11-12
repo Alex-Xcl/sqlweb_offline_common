@@ -307,13 +307,41 @@ def strip_comments(sql):
     return "".join(out)
 
 
+_END_NO_DEC = ("if", "loop", "while", "repeat", "for")
+_TX_BEGIN_NEXT = ("tran", "transaction", "work")
+
+
+def _next_word(s, i):
+    """从 i 起跳过分隔符取下一个词（小写）；没有则返回空串。"""
+    n = len(s)
+    while i < n and s[i].isspace():
+        i += 1
+    j = i
+    while j < n and (s[j].isalnum() or s[j] in "_#$"):
+        j += 1
+    return s[i:j].lower()
+
+
 def split_statements(sql):
-    """按分号切分，尊重引号与括号。"""
+    """按分号切分，尊重引号、括号，以及 BEGIN…END 程序块。
+
+    为什么必须识别程序块：达梦 / Oracle 的
+    `CREATE OR REPLACE PROCEDURE ... AS BEGIN NULL; END;` 内部每句都带分号，
+    按分号硬切会拆成「……AS BEGIN NULL」+「END」两条，服务端必然报语法错误，
+    表现就是“这种存储过程建不了”。这里让块内分号不切分：
+    BEGIN / CASE 增一层，`END;` / `END CASE` 减一层，
+    `END IF` / `END LOOP` / `END WHILE` / `END FOR` / `END REPEAT` 不算收尾
+    （它们配对的 IF / LOOP / WHILE / FOR / REPEAT 没计入）。
+    单独的事务 `BEGIN;`（PostgreSQL / SQL Server BEGIN TRAN）不当作块。
+    """
     s = strip_comments(sql)
     stmts = []
     buf = []
-    depth = 0
-    q = None
+    depth = 0       # 括号层数
+    q = None        # 当前引号
+    block = 0       # BEGIN / CASE 嵌套层数
+    skip_case = False   # 刚处理过 END CASE，后面那个 case 不再重复计数
+    word = ""
     i = 0
     n = len(s)
     while i < n:
@@ -329,24 +357,59 @@ def split_statements(sql):
             i += 1
             continue
         if c in ("'", '"'):
+            word = ""
             q = c
             buf.append(c)
-        elif c == "(":
+            i += 1
+            continue
+        if c.isalnum() or c in "_#$":
+            word += c
+            buf.append(c)
+            i += 1
+            continue
+        if word:
+            w = word.lower()
+            word = ""
+            if w != "case":
+                skip_case = False
+            if w == "case":
+                if skip_case:
+                    skip_case = False         # 这个 case 属于上一句 END CASE，不重复计数
+                elif block > 0:
+                    block += 1
+            elif w == "begin":
+                nxt = s[i:].lstrip()
+                if nxt.startswith(";") or _next_word(s, i) in _TX_BEGIN_NEXT:
+                    pass                      # 事务 BEGIN; 不进块模式
+                else:
+                    block += 1
+            elif w == "end":
+                nw = _next_word(s, i)
+                if nw in _END_NO_DEC:
+                    pass                      # END IF / END LOOP … 只是闭合 if / loop
+                elif block > 0:
+                    block -= 1
+                    if nw == "case":
+                        skip_case = True
+        if c == "(":
             depth += 1
             buf.append(c)
         elif c == ")":
             depth = max(0, depth - 1)
             buf.append(c)
         elif c == ";" and depth == 0:
-            t = "".join(buf).strip()
-            if t:
-                stmts.append(t)
-            buf = []
+            if block > 0:
+                buf.append(c)                 # 块内分号，继续累积
+            else:
+                t = "".join(buf).strip()
+                if t and t != "/":            # 单独的 "/" 是 SQL*Plus 提交符，丢掉
+                    stmts.append(t)
+                buf = []
         else:
             buf.append(c)
         i += 1
     t = "".join(buf).strip()
-    if t:
+    if t and t != "/":
         stmts.append(t)
     return stmts
 
@@ -359,7 +422,8 @@ def readonly_check(sql):
     head = s.split(None, 1)[0].lower().strip("(")
     if head in READONLY_HEADS:
         return True, ""
-    return False, "只读模式仅允许查询类语句（select/with/show/explain 等），当前语句以 %s 开头" % head
+    return False, ("该数据源是只读（readonly），拦截了以 %s 开头的语句。"
+                   "建表 / 建存储过程 / 写入请先在【数据源管理】把它改成「可写」再执行" % head)
 
 
 def jsonable(v):

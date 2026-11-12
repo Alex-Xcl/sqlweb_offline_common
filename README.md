@@ -292,12 +292,14 @@ python -m pip download -d wheels pymssql oracledb
 默认 `readonly: true`，在语句层面拦截（不是简单的字符串匹配）：
 
 - 先剥掉 `--` 行注释和 `/* */` 块注释（跳过字符串字面量内部）
-- 再按分号切分（尊重引号、括号层级）
+- 再按分号切分（尊重引号、括号层级、**以及 `BEGIN … END` 程序块**）
 - 每条语句取首关键字，白名单 `select / with / values / explain / show / table / declare / desc`
 
 所以 `-- 注释\nSELECT ...` 不会被误杀，`INSERT INTO t VALUES('a;b')` 里的分号也不会误切。
 
-按数据源可单独设 `"readonly": false` 放开写权限。
+**程序块不再被切碎**：`CREATE OR REPLACE PROCEDURE … AS BEGIN … END;` 里的每个分号都是过程体内部的，整段作为一条语句提交（`END IF` / `END LOOP` / `END CASE` 算块内闭合，不算语句结束；单独的 `BEGIN;` 事务不会被当成块）。这是 common-1.3.0 修的：以前按分号硬切会把过程拆成「……AS BEGIN NULL」+「END」，服务端必然报语法错误，看起来就是“这种存储过程建不了”。
+
+按数据源可单独设 `"readonly": false` 放开写权限。**在只读数据源上执行 `CREATE PROCEDURE` / `CREATE TABLE` 会被入口拦下**，提示里直接指出「去数据源管理把它改成可写」。
 
 ### 5.4 多账号与可见范围（common-1.1.0 新增）
 
@@ -658,6 +660,7 @@ sqlweb_offline_common_common-1.3.0/
 | 忘记管理员口令 | 停服后删掉 `sqlweb.db` 的 `users` 行（或整库），重启回到初始化模式并打印新令牌 |
 | 手改了 SQL / 状态库但界面没变 | 界面与接口一律以 `sqlweb.db` 为准；用 `sqlite3` 直接改库要重启服务才生效。界面里改则不用 |
 | nginx 反代 `/sqlweb/` 打不开（404 / 白屏 / 资源全丢） | 先看启动日志有没有 `访问前缀: /sqlweb`；没有就是 `base_path` 没读到——用 `python3 setconfig.py --set base_path=/sqlweb` 写状态库再重启，不要再改 `config.json`。另确认 `proxy_pass` 结尾带 `/`（`http://127.0.0.1:8899/`） |
+| `CREATE [OR REPLACE] PROCEDURE` / 触发器报语法错误、像是被截断 | 数据源是只读时先在【数据源管理】改成「可写」；仍报错就看错误里的语句片段——1.3.0 起程序块整段提交，若片段以 `END` 开头说明用了旧包，换新包即可 |
 | 改了 `config.json` 但端口 / 子路径没变 | 1.3.0 起配置真源是 `sqlweb.db`，`config.json` 只在首次启动导入一次。用 `python3 setconfig.py --set ...` 或界面改；启动日志会对残留的 `config.json` 打出提示 |
 | 达梦在 mac 上报 `ModuleNotFoundError: dmPython` | 装纯 Python 驱动：`pip install dm-pure`，服务会自动降级（3.7 上走 vendor 里的 `dmpy`） |
 | Windows 下中文乱码 | 用 `chcp 65001` 或在 PowerShell 里跑；`start.bat` 已内置 |

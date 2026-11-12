@@ -12,6 +12,7 @@ import urllib.request, urllib.error
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import sqlweb
+import drivers
 
 PORT = 18899
 # 用系统临时目录，Windows 上没有 /tmp
@@ -331,6 +332,85 @@ _ret2 = _sp_run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__
                  "--db", _sdb, "--set", "base_path=/"])
 _sc2 = _store.SqliteStore(_sdb).load_config()
 check("setconfig.py 把 base_path=/ 规范成空（根路径）", _ret2 == 0 and _sc2.get("base_path") == "", repr(_sc2.get("base_path")))
+
+# 语句切分：达梦 / Oracle 的程序块不能被分号拆开（否则 CREATE PROCEDURE 必报语法错）
+_p_proc = """CREATE OR REPLACE PROCEDURE EALEPM.PROC_X(p_year VARCHAR(2000))
+AS
+BEGIN
+  NULL;
+END;"""
+_s1 = sqlweb.split_statements(_p_proc)
+check("存储过程整段提交（不被分号拆成两条）", len(_s1) == 1 and _s1[0].rstrip().endswith("END"), _s1)
+_s2 = sqlweb.split_statements("BEGIN; INSERT INTO t VALUES(1); COMMIT;")
+check("事务 BEGIN; 仍按分号切三条", len(_s2) == 3, _s2)
+_s3 = sqlweb.split_statements("SELECT CASE WHEN 1=1 THEN 1 END; SELECT 2;")
+check("块外 CASE 表达式不吞下一条", len(_s3) == 2, _s3)
+_blk = """CREATE OR REPLACE PROCEDURE P AS
+BEGIN
+  IF 1=1 THEN NULL; END IF;
+  CASE WHEN 1=1 THEN NULL; END CASE;
+  NULL;
+END;
+SELECT 1;"""
+_s4 = sqlweb.split_statements(_blk)
+check("块内 END IF / END CASE 平衡，后续语句正常",
+      len(_s4) == 2 and _s4[1].strip() == "SELECT 1", _s4)
+_s5 = sqlweb.split_statements("BEGIN NULL; END;\n/\n")
+check("匿名块整段、SQL*Plus 的 / 丢掉", len(_s5) == 1, _s5)
+_ro_ok, _ro_msg = sqlweb.readonly_check("CREATE OR REPLACE PROCEDURE P AS BEGIN NULL; END;")
+check("只读拦截 DDL 的提示指出去哪改",
+      (not _ro_ok) and ("数据源管理" in _ro_msg), _ro_msg)
+
+# 整段提交：块式 DDL 只喂给驱动一次（旧实现会切成 "……BEGIN NULL" + "END" 两条）
+class _FakeCur(object):
+    def __init__(self, rec):
+        self.rec, self.description = rec, None
+
+    def execute(self, st):
+        self.rec.append(st)
+
+    def fetchall(self):
+        return []
+
+    def close(self):
+        pass
+
+
+class _FakeConn(object):
+    def __init__(self, rec):
+        self.rec = rec
+
+    def cursor(self):
+        return _FakeCur(self.rec)
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class _FakeDriver(object):
+    name = "fake"
+
+    def __init__(self, rec):
+        self.rec = rec
+
+    def connect(self, ds, timeout=10, statement_timeout_ms=30000):
+        return _FakeConn(self.rec)
+
+
+_rec = []
+_orig_get = drivers.get_driver
+drivers.get_driver = lambda n: _FakeDriver(_rec)
+try:
+    sqlweb.run_query({"readonly": False, "connect_timeout": 10, "statement_timeout_ms": 30000},
+                     {"driver": "fake", "readonly": False}, _p_proc, 100)
+finally:
+    drivers.get_driver = _orig_get
+check("块式 DDL 整段只提交一次（不拆成两条碎片）",
+      len(_rec) == 1 and _rec[0].strip().upper().startswith("CREATE")
+      and _rec[0].rstrip().endswith("END"), _rec)
 
 check("状态库权限 600（POSIX 生效，Windows 跳过）",
       os.name == "nt" or oct(os.stat(_sdb).st_mode)[-3:] == "600", oct(os.stat(_sdb).st_mode))
