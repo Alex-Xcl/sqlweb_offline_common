@@ -417,7 +417,6 @@
   <span class="tag ro" id="tagRo">只读</span>
   <div class="grow"></div>
   <button class="hbtn" id="btnDs">数据源管理</button>
-  <button class="hbtn" id="btnRedis" style="display:none">Redis</button>
   <button class="hbtn" id="btnUsers" style="display:none">账号</button>
   <button class="hbtn" id="btnPwd">改密</button>
   <span class="who" id="whoLabel"></span>
@@ -616,7 +615,7 @@
     lastResult: null, editingKey: null, busy: false,
     canManage: false, role: "user", me: "",
     users: [], allDatabases: [], editingUser: null, userResetMode: false,
-    redis: [], allRedis: [], rKey: "", rCursor: "0", rKeys: [], rTotal: 0,
+    redis: [], allRedis: [], rKey: "", rCursor: "0", rKeys: [], rTotal: 0, redisPick: "",
     editingRedis: null
   };
 
@@ -685,9 +684,8 @@
       // 普通账号看不到"数据源管理"和"账号"入口，改配置一律由管理员做
       $("btnDs").style.display = state.canManage ? "" : "none";
       $("btnUsers").style.display = state.canManage ? "" : "none";
-      // Redis 入口：有被授权的实例就显示；管理员即使还没配实例也显示（进去才能加）
+      // Redis 也是数据源：实例直接进顶栏下拉的「Redis 缓存」组，不再单开按钮
       state.redis = d.redis || [];
-      $("btnRedis").style.display = (state.canManage || state.redis.length) ? "" : "none";
       renderDbSelect();
       renderRoTag();
       ensureDbLibs();
@@ -756,17 +754,36 @@
       }
       sel.appendChild(og);
     });
-    // 回填选中项：源和库都要对上；对不上就退回「源」这一层
-    var hit = false;
-    for (var i = 0; i < sel.options.length; i++) {
-      var op = sel.options[i];
-      if (op.value === state.db && (op.getAttribute("data-db") || "") === (state.database || "")) {
-        sel.selectedIndex = i; hit = true; break;
-      }
+    // Redis 也是数据源：单列一组，一个实例一项，选中就进它的面板
+    if ((state.redis || []).length) {
+      var ogr = document.createElement("optgroup");
+      ogr.label = "Redis 缓存";
+      state.redis.forEach(function (x) {
+        var ro = document.createElement("option");
+        ro.value = "redis:" + x.key;
+        ro.textContent = (x.label || x.key) + "  ·  " + x.host + ":" + x.port + "/db" + x.db +
+                         (x.readonly ? "  · 只读" : "  · 可写");
+        ogr.appendChild(ro);
+      });
+      sel.appendChild(ogr);
     }
-    if (!hit) {
-      for (var j = 0; j < sel.options.length; j++) {
-        if (sel.options[j].value === state.db) { sel.selectedIndex = j; break; }
+    // 回填选中项：正在看 Redis 就选那个实例；否则源和库都要对上，对不上退回「源」这一层
+    if (state.redisPick) {
+      for (var r = 0; r < sel.options.length; r++) {
+        if (sel.options[r].value === "redis:" + state.redisPick) { sel.selectedIndex = r; break; }
+      }
+    } else {
+      var hit = false;
+      for (var i = 0; i < sel.options.length; i++) {
+        var op = sel.options[i];
+        if (op.value === state.db && (op.getAttribute("data-db") || "") === (state.database || "")) {
+          sel.selectedIndex = i; hit = true; break;
+        }
+      }
+      if (!hit) {
+        for (var j = 0; j < sel.options.length; j++) {
+          if (sel.options[j].value === state.db) { sel.selectedIndex = j; break; }
+        }
       }
     }
     sel.title = state.databases.length + " 个数据源";
@@ -787,6 +804,16 @@
   function renderConnChip() {
     var el = $("connChip");
     if (!el) return;
+    if (state.redisPick) {
+      var ri = null;
+      (state.redis || []).forEach(function (x) { if (x.key === state.redisPick) ri = x; });
+      if (ri) {
+        var rs = ri.host + ":" + ri.port + "/db" + ri.db;
+        el.textContent = rs;
+        el.title = rs + (ri.readonly ? "（只读）" : "（可写）");
+        return;
+      }
+    }
     var ds = currentDs();
     if (!ds) { el.textContent = "—"; el.title = ""; return; }
     var s;
@@ -879,6 +906,10 @@
 
   function renderRoTag() {
     var ds = currentDs(), ro = ds ? ds.readonly : true;
+    if (state.redisPick) {
+      ro = true;
+      (state.redis || []).forEach(function (x) { if (x.key === state.redisPick) ro = !!x.readonly; });
+    }
     var el = $("tagRo");
     el.textContent = ro ? "只读" : "可写";
     el.className = "tag " + (ro ? "ro" : "rw");
@@ -1601,7 +1632,6 @@
       if (!d.ok) return;
       state.databases = d.databases || [];
       state.redis = d.redis || [];
-      $("btnRedis").style.display = (state.canManage || state.redis.length) ? "" : "none";
       state.defaultDb = d.default_db || state.defaultDb;
       if (!state.db && state.databases.length) state.db = state.databases[0].key;
       var still = false;
@@ -1628,6 +1658,15 @@
     var opt = this.options[this.selectedIndex];
     if (!opt) return;
     var key = opt.value, lib = opt.getAttribute("data-db") || "";
+    if (key.indexOf("redis:") === 0) {
+      // 选了 Redis 实例：开它的面板，SQL 那条连接原样留着，关掉面板就回来
+      state.redisPick = key.slice(6);
+      renderConnChip();
+      renderRoTag();
+      openRedis(state.redisPick);
+      return;
+    }
+    state.redisPick = "";
     state.db = key;
     state.database = lib;
     state.databasesOfDb = (state.dbLibs[key] || []).slice();
@@ -2065,7 +2104,7 @@
     return null;
   }
 
-  function openRedis() {
+  function openRedis(instKey) {
     state.rKey = ""; state.rCursor = "0"; state.rKeys = [];
     state.editingRedis = null;
     $("modalRedis").classList.add("show");
@@ -2077,6 +2116,7 @@
     $("rCmdOut").className = "cmdout";
     $("rCmdOut").textContent = "只读实例只放行读命令白名单（GET/TYPE/TTL/SCAN/HGETALL/LRANGE/SMEMBERS/ZRANGE/INFO…）";
     renderRedisSelect();
+    if (instKey) $("rInst").value = instKey;
     if (state.canManage) renderRedisList();
     if (!state.redis.length) {
       $("rOverview").innerHTML = '<div class="treeload">' +
@@ -2089,7 +2129,12 @@
     redisScan(true);
   }
 
-  function closeRedis() { $("modalRedis").classList.remove("show"); }
+  function closeRedis() {
+    $("modalRedis").classList.remove("show");
+    // 关掉面板就回到之前选中的 SQL 源，下拉别停在 Redis 上
+    state.redisPick = "";
+    renderDbSelect();
+  }
 
   function renderRedisSelect() {
     var sel = $("rInst");
@@ -2391,10 +2436,10 @@
     apiGet("/api/config").then(function (d) {
       if (!d.ok) return;
       state.redis = d.redis || [];
+      renderDbSelect();
       renderRedisSelect();
       renderRedisList();
       $("rFormWrap").innerHTML = "";
-      $("btnRedis").style.display = (state.canManage || state.redis.length) ? "" : "none";
       if (!state.redis.length) {
         $("rOverview").innerHTML = '<div class="treeload">' +
           (state.canManage ? "还没有 Redis 实例，点下方「新增实例」加一个"
@@ -2407,7 +2452,6 @@
     });
   }
 
-  $("btnRedis").addEventListener("click", openRedis);
   $("closeRedis").addEventListener("click", closeRedis);
   $("btnRedisClose").addEventListener("click", closeRedis);
   $("modalRedis").addEventListener("click", function (ev) {
