@@ -34,6 +34,9 @@
 - **可见模式白名单**：每个数据源可配 `visible_schemas`，只把要给人看的库/模式列进对象树（达梦一长串 SYS / SYSDBA / EAL* 全都能藏掉）
 - **Redis 面板**：Redis 既在"新增数据源 → 数据库类型"下拉里（选 Redis 就填主机 / 端口 / 库号 / ACL 用户名，测试连与保存都落到状态库 `sqlweb.db` 的 `redis` 表），也保留独立面板：概览（版本 / 内存 / 命中率 / keyspace）、SCAN 浏览 key（带类型与 TTL）、按 key 展开 string / hash / list / set / zset，以及命令框直接执行（只读实例按白名单放行）。管理员可在两处增删改 Redis 实例，并按账号分配可见实例
 - **表名搜索**：对象树顶部输入框，按表名模糊搜（不区分大小写）。已展开的库在本地即时过滤；停顿 350 ms 或回车则跨**所有可见模式**搜表，点结果直接看列、双击直接生成 `SELECT * FROM schema.table`。搜索严格受 `visible_schemas` 白名单约束，没权限的模式不会被搜到
+- **对象树按类型分组**（common-1.3.0 新增）：schema 展开后分成 **表 / 视图 / 存储过程 / 函数 / 序列 / 触发器** 六组，每组带数量，空组不显示；点视图、过程、函数直接看**定义（DDL）**
+- **编辑器语法高亮 + 自动补全**（common-1.3.0 新增）：零外部依赖（不引 CodeMirror），关键字 / 字符串 / 数字 / 注释分色；输入时按"关键字 / 表名 / 别名.列名"给候选，Tab 或回车落地
+- **性能**（common-1.3.0 新增）：元数据 TTL 缓存（默认 120 s）+ 每数据源空闲连接复用（最多 2 条，取出先 `SELECT 1` 验活）+ >2 KB 的 JSON 响应 gzip
 - **子路径部署**：支持 nginx 反代到 `/sqlweb/` 这类前缀，不需要改端口
 
 ---
@@ -370,6 +373,77 @@ Redis 有两个入口，**改的是同一份状态库 `sqlweb.db` 的 `redis` �
 - 命中结果点一下 → 右侧出列结构；双击 → 直接生成 `SELECT * FROM schema.table LIMIT 100` 并执行
 - 每次搜索最多 8 秒、最多 1000 条（默认 300 条，超出即标"已截断"并提前返回），不会因为某个模式卡住把页面拖死
 - 换数据源、换库、点"刷新"都会自动清空搜索词，避免拿旧源的关键字去新源搜
+
+### 5.7 对象树：视图 / 存储过程 / 函数 / 序列 / 触发器（common-1.3.0 新增）
+
+展开一个 schema，后端只发**一个**请求 `GET /api/objects?db=…&schema=…`，一次把六类对象按组返回：
+
+```
+main ▾ 2
+ ├ 表 ▾ 2        t_order / t_user
+ ├ 视图 ▾ 1      v_user
+ ├ 存储过程 ▾ n   …
+ ├ 函数 ▾ n       …
+ ├ 序列 ▾ n       …
+ └ 触发器 ▾ n     …
+```
+
+- **空组不渲染**：SQLite 没有存储过程/函数，就只出现"表"和"视图"两组
+- 组标题可点开/收起（记住状态），点击对象名：
+  - 表 → 右侧出列结构（双击直接生成 `SELECT * FROM schema.table LIMIT 100` 并执行）
+  - 视图 / 存储过程 / 函数 / 触发器 → 弹窗显示定义，带语法高亮，可一键复制
+- 顶部"过滤表名…"同时过滤**所有类型**的对象名；跨模式搜索仍走 `/api/search_tables`（只搜表）
+- 各驱动的对象来源与定义来源：
+
+| 驱动 | 对象来源 | 定义来源 | 备注 |
+| --- | --- | --- | --- |
+| PostgreSQL | `pg_class`（r/p/f/v/m/S）+ `pg_proc`（prokind 区分过程/函数） | `pg_get_functiondef` / `pg_get_viewdef` | PG 10 无 `prokind`，自动退回"全部归函数" |
+| MySQL / MariaDB | `information_schema.TABLES` + `ROUTINES` + `TRIGGERS` | `ROUTINES.ROUTINE_DEFINITION` / `SHOW CREATE VIEW` / `SHOW CREATE TRIGGER` | 过程体需要账号有 `SHOW ROUTINE`/相应权限，否则只能拿到名字 |
+| SQL Server | `sys.objects`（U/V/P/FN/IF/TF/SO/TR/SV） | `sys.sql_modules.definition` | |
+| Oracle | `ALL_OBJECTS`（失败退回 `ALL_TABLES`+`ALL_VIEWS`） | 视图 `ALL_VIEWS.TEXT`；过程/函数/触发器 `ALL_SOURCE` | |
+| 达梦 DM8 | 同 Oracle（`ALL_OBJECTS` / `ALL_SOURCE` 兼容视图） | 同上 | 低版本若 `ALL_OBJECTS` 不可用，会退回只列表与视图 |
+| SQLite | `sqlite_master`（table/view） | `sqlite_master.sql` | 没有过程/函数/序列/触发器，组自然为空 |
+
+- 新增接口（都走与表/列相同的 `visible_schemas` 白名单，越界返回 403）：
+
+| 接口 | 作用 |
+| --- | --- |
+| `GET /api/objects?schema=` | 一次返回 `{table:[],view:[],procedure:[],function:[],sequence:[],trigger:[]}`；`&refresh=1` 绕过缓存 |
+| `GET /api/source?schema=&name=&kind=` | 返回该对象的定义文本（`data` 为空串表示库里取不到，不是错误） |
+| `GET /api/catalog?schema=` | 表 + 列的类型字典，供编辑器补全，缓存 300 s |
+
+`GET /api/tables`、`/api/columns` 保留不变（老前端与脚本仍可用）。
+
+### 5.8 SQL 编辑器：语法高亮 + 自动联想（common-1.3.0 新增）
+
+**语法高亮**：顶层是一个 `textarea`（文字透明、只留光标和选区），底下叠一层同字体同内边距的 `<pre>` 负责上色，滚动位置双向同步。所以：
+
+- 不引任何第三方编辑器，包体积不变，断网也能用
+- 中文注释、字符串、`--` 行注释、`/* */` 块注释都按 token 分色；关键字蓝、字符串绿、数字橙、注释灰
+- Tab 键插入两空格（不会跳焦点），`Ctrl+Enter` 执行不变
+
+**自动联想**：输入时按当前词和上下文给候选，最多 14 条，`↑ ↓` 选择、`Tab`/`Enter` 落地、`Esc` 关闭：
+
+| 你打的 | 候选来源 |
+| --- | --- |
+| `sel` | SQL 关键字（`select` …） |
+| `t_user` 之后、`FROM t_user` 只涉及一张表 | 该表的列名 |
+| 别名或表名加点，如 `t.`（`FROM t_user t`） | 该表全部列名（别名会按 `FROM/JOIN/UPDATE/INTO` 自动解析） |
+| 无关上下文 | 当前 schema 的表 / 视图 / 过程 / 函数名 |
+
+补全数据来自 `/api/catalog`（一次批量取表+列，前端按 schema 缓存）；展开某个 schema 时会顺带预热，敲键盘时基本零等待。
+
+### 5.9 性能：连接复用、元数据缓存、响应压缩（common-1.3.0 新增）
+
+对象树是"点一下查一次"的交互，原来每次点击都要**新建连接 → 查系统表 → 关连接**。1.3.0 做了三件很轻的事：
+
+| 机制 | 行为 | 影响面 |
+| --- | --- | --- |
+| 元数据 TTL 缓存 | `/api/objects`、`/api/source`、`/api/catalog`、`/api/tables` 按"数据源 + 库 + schema"缓存 120 s（字典 300 s）；`&refresh=1` 强制重查 | 反复展开同一 schema 不再打库；改完对象想立刻看到，加 `refresh=1` 或重启 |
+| 连接复用 | 每个数据源保留最多 2 条空闲连接，下次请求先 `SELECT 1`（Oracle/达梦用 `SELECT 1 FROM DUAL`）验活，失败就丢弃重连；SQLite 因 `check_same_thread` 不复用 | 省掉 TCP 握手 + 登录鉴权；连接异常自动降级为新建，不会把坏连接传下去 |
+| 响应压缩 | 任何 `/api/*` JSON 超过 2 KB 且客户端支持时用 gzip | 补全字典 / 对象树这类响应通常压到 1/5 以内 |
+
+改数据源（保存 / 删除 / 设默认）时缓存与空闲连接一起清掉，避免换源后还看到旧 schema。
 
 ---
 

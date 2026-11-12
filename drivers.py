@@ -742,3 +742,308 @@ def list_drivers():
                     "available": ok, "info": info})
     return out
 
+
+# ---------------------------------------------------------------- 对象树 / 定义 / 补全字典
+# 各驱动按自己的系统视图取「表之外的对象」：视图、存储过程、函数、序列、触发器。
+# 取不到就返回空，宁可少列也不让整棵树挂掉。
+
+_KIND_KEYS = ("table", "view", "procedure", "function", "sequence", "trigger", "synonym")
+
+
+def _empty_objects():
+    return dict((k, []) for k in _KIND_KEYS)
+
+
+def _q(conn, sql):
+    """跑一条只读查询，顺手把游标关掉。"""
+    cur = conn.cursor()
+    try:
+        cur.execute(sql)
+        return cur.fetchall()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+def _ident_backtick(s):
+    return "`" + str(s).replace("`", "``") + "`"
+
+
+def _ident_bracket(s):
+    return "[" + str(s).replace("]", "]]") + "]"
+
+
+# ---- PostgreSQL ----
+_PG_RELKIND = {"r": "table", "p": "table", "f": "table", "v": "view", "m": "view", "S": "sequence"}
+
+
+def _objects_pg(conn, schema):
+    out = _empty_objects()
+    for name, kind in _q(conn,
+                         "SELECT c.relname, c.relkind FROM pg_class c "
+                         "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                         "WHERE n.nspname = %s AND c.relkind IN ('r','p','f','v','m','S') "
+                         "ORDER BY 1" % quote_literal(schema)):
+        k = _PG_RELKIND.get(_to_str(kind))
+        if k:
+            out[k].append(_to_str(name))
+    try:
+        rows = _q(conn, "SELECT p.proname, p.prokind FROM pg_proc p "
+                        "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                        "WHERE n.nspname = %s ORDER BY 1" % quote_literal(schema))
+        for name, pk in rows:
+            out["procedure" if _to_str(pk) == "p" else "function"].append(_to_str(name))
+    except Exception:
+        # PG 10 及更早没有 prokind
+        for (name,) in _q(conn, "SELECT p.proname FROM pg_proc p "
+                                "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                                "WHERE n.nspname = %s ORDER BY 1" % quote_literal(schema)):
+            out["function"].append(_to_str(name))
+    return out
+
+
+def _source_pg(conn, schema, name, kind):
+    if kind == "view":
+        rows = _q(conn, "SELECT pg_get_viewdef(c.oid, true) FROM pg_class c "
+                        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "WHERE n.nspname = %s AND c.relname = %s"
+                        % (quote_literal(schema), quote_literal(name)))
+        if not rows:
+            return ""
+        return "CREATE OR REPLACE VIEW \"%s\".\"%s\" AS\n%s;" % (schema, name, _to_str(rows[0][0]))
+    rows = _q(conn, "SELECT pg_get_functiondef(p.oid) FROM pg_proc p "
+                    "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                    "WHERE n.nspname = %s AND p.proname = %s ORDER BY p.oid DESC"
+                    % (quote_literal(schema), quote_literal(name)))
+    return _to_str(rows[0][0]) if rows else ""
+
+
+def _catalog_pg(conn, schema, limit=400):
+    rows = _q(conn, "SELECT c.relname, a.attname, format_type(a.atttypid, a.atttypmod) "
+                    "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped "
+                    "WHERE n.nspname = %s AND c.relkind IN ('r','p','v','m') "
+                    "ORDER BY c.relname, a.attnum" % quote_literal(schema))
+    return rows
+
+
+# ---- MySQL ----
+def _objects_mysql(conn, schema):
+    out = _empty_objects()
+    for name, t in _q(conn, "SELECT table_name, table_type FROM information_schema.tables "
+                            "WHERE table_schema = %s ORDER BY 1" % quote_literal(schema)):
+        out["view" if "VIEW" in _to_str(t).upper() else "table"].append(_to_str(name))
+    try:
+        for name, t in _q(conn, "SELECT routine_name, routine_type FROM information_schema.routines "
+                                "WHERE routine_schema = %s ORDER BY 1" % quote_literal(schema)):
+            out["procedure" if _to_str(t).upper() == "PROCEDURE" else "function"].append(_to_str(name))
+    except Exception:
+        pass
+    try:
+        for (name,) in _q(conn, "SELECT trigger_name FROM information_schema.triggers "
+                                "WHERE trigger_schema = %s ORDER BY 1" % quote_literal(schema)):
+            out["trigger"].append(_to_str(name))
+    except Exception:
+        pass
+    return out
+
+
+def _source_mysql(conn, schema, name, kind):
+    if kind == "view":
+        rows = _q(conn, "SHOW CREATE VIEW %s.%s" % (_ident_backtick(schema), _ident_backtick(name)))
+        return _to_str(rows[0][1]) if rows and len(rows[0]) > 1 else ""
+    if kind == "trigger":
+        rows = _q(conn, "SHOW CREATE TRIGGER %s" % _ident_backtick(name))
+        return _to_str(rows[0][2]) if rows and len(rows[0]) > 2 else ""
+    rows = _q(conn, "SELECT routine_definition FROM information_schema.routines "
+                    "WHERE routine_schema = %s AND routine_name = %s"
+                    % (quote_literal(schema), quote_literal(name)))
+    if not rows or not rows[0][0]:
+        return ""
+    head = "CREATE %s %s.%s\n" % (kind.upper(), schema, name)
+    return head + _to_str(rows[0][0])
+
+
+def _catalog_mysql(conn, schema, limit=400):
+    return _q(conn, "SELECT table_name, column_name, column_type FROM information_schema.columns "
+                    "WHERE table_schema = %s ORDER BY table_name, ordinal_position" % quote_literal(schema))
+
+
+# ---- SQL Server ----
+_MSSQL_TYPE = {"U": "table", "V": "view", "P": "procedure", "FN": "function", "IF": "function",
+               "TF": "function", "FS": "function", "FT": "function", "SO": "sequence",
+               "TR": "trigger", "SN": "synonym"}
+
+
+def _objects_mssql(conn, schema):
+    out = _empty_objects()
+    for name, t in _q(conn, "SELECT o.name, RTRIM(o.type) FROM sys.objects o "
+                            "JOIN sys.schemas s ON s.schema_id = o.schema_id "
+                            "WHERE s.name = %s ORDER BY 1" % quote_literal(schema)):
+        k = _MSSQL_TYPE.get(_to_str(t).strip().upper())
+        if k:
+            out[k].append(_to_str(name))
+    return out
+
+
+def _source_mssql(conn, schema, name, kind):
+    rows = _q(conn, "SELECT TOP 1 m.definition FROM sys.sql_modules m "
+                    "JOIN sys.objects o ON o.object_id = m.object_id "
+                    "JOIN sys.schemas s ON s.schema_id = o.schema_id "
+                    "WHERE s.name = %s AND o.name = %s"
+                    % (quote_literal(schema), quote_literal(name)))
+    return _to_str(rows[0][0]) if rows and rows[0][0] else ""
+
+
+def _catalog_mssql(conn, schema, limit=400):
+    return _q(conn, "SELECT o.name, c.name, t.name FROM sys.objects o "
+                    "JOIN sys.schemas s ON s.schema_id = o.schema_id "
+                    "JOIN sys.columns c ON c.object_id = o.object_id "
+                    "LEFT JOIN sys.types t ON t.user_type_id = c.user_type_id "
+                    "WHERE s.name = %s AND o.type IN ('U','V') ORDER BY o.name, c.column_id"
+                    % quote_literal(schema))
+
+
+# ---- Oracle / 达梦（ALL_* 兼容视图）----
+_ORA_TYPE = {"TABLE": "table", "VIEW": "view", "PROCEDURE": "procedure", "FUNCTION": "function",
+             "SEQUENCE": "sequence", "TRIGGER": "trigger", "SYNONYM": "synonym"}
+
+
+def _objects_ora(conn, schema):
+    out = _empty_objects()
+    try:
+        for name, t in _q(conn, "SELECT object_name, object_type FROM all_objects "
+                                "WHERE owner = %s AND object_type IN "
+                                "('TABLE','VIEW','PROCEDURE','FUNCTION','SEQUENCE','TRIGGER') "
+                                "ORDER BY 1" % quote_literal(schema)):
+            k = _ORA_TYPE.get(_to_str(t).upper())
+            if k:
+                out[k].append(_to_str(name))
+    except Exception:
+        pass
+    if not out["table"]:
+        try:
+            out["table"] = [_to_str(r[0]) for r in
+                            _q(conn, "SELECT table_name FROM all_tables WHERE owner = %s ORDER BY 1"
+                                     % quote_literal(schema))]
+        except Exception:
+            pass
+    if not out["view"]:
+        try:
+            out["view"] = [_to_str(r[0]) for r in
+                           _q(conn, "SELECT view_name FROM all_views WHERE owner = %s ORDER BY 1"
+                                    % quote_literal(schema))]
+        except Exception:
+            pass
+    return out
+
+
+def _source_ora(conn, schema, name, kind):
+    if kind == "view":
+        try:
+            rows = _q(conn, "SELECT text FROM all_views WHERE owner = %s AND view_name = %s"
+                            % (quote_literal(schema), quote_literal(name)))
+            if rows:
+                return "CREATE OR REPLACE VIEW \"%s\".\"%s\" AS\n%s" % (schema, name, _to_str(rows[0][0]))
+        except Exception:
+            pass
+        return ""
+    try:
+        rows = _q(conn, "SELECT text FROM all_source WHERE owner = %s AND name = %s AND type = %s "
+                        "ORDER BY line" % (quote_literal(schema), quote_literal(name),
+                                           quote_literal(kind.upper())))
+        return "".join(_to_str(r[0]) for r in rows)
+    except Exception:
+        return ""
+
+
+def _catalog_ora(conn, schema, limit=400):
+    return _q(conn, "SELECT table_name, column_name, data_type FROM all_tab_columns "
+                    "WHERE owner = %s ORDER BY table_name, column_id" % quote_literal(schema))
+
+
+# ---- SQLite ----
+def _objects_sqlite(conn, schema):
+    out = _empty_objects()
+    for name, t in _q(conn, "SELECT name, type FROM sqlite_master "
+                            "WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY 1"):
+        out["view" if _to_str(t) == "view" else "table"].append(_to_str(name))
+    return out
+
+
+def _source_sqlite(conn, schema, name, kind):
+    try:
+        rows = _q(conn, "SELECT sql FROM sqlite_master WHERE name = %s" % quote_literal(name))
+        return _to_str(rows[0][0]) if rows and rows[0][0] else ""
+    except Exception:
+        return ""
+
+
+def _catalog_sqlite(conn, schema, limit=400):
+    rows = []
+    for (t,) in _q(conn, "SELECT name FROM sqlite_master WHERE type IN ('table','view') "
+                         "AND name NOT LIKE 'sqlite_%' ORDER BY 1"):
+        try:
+            for c in _q(conn, "PRAGMA table_info(%s)" % quote_literal(_to_str(t))):
+                rows.append((_to_str(t), _to_str(c[1]), _to_str(c[2])))
+        except Exception:
+            continue
+    return rows
+
+
+_OBJECTS_IMPL = {"postgresql": _objects_pg, "mysql": _objects_mysql, "sqlserver": _objects_mssql,
+                 "oracle": _objects_ora, "dameng": _objects_ora, "sqlite": _objects_sqlite}
+_SOURCE_IMPL = {"postgresql": _source_pg, "mysql": _source_mysql, "sqlserver": _source_mssql,
+                "oracle": _source_ora, "dameng": _source_ora, "sqlite": _source_sqlite}
+_CATALOG_IMPL = {"postgresql": _catalog_pg, "mysql": _catalog_mysql, "sqlserver": _catalog_mssql,
+                 "oracle": _catalog_ora, "dameng": _catalog_ora, "sqlite": _catalog_sqlite}
+
+
+def driver_objects(self, conn, schema):
+    """对象树：一次把表/视图/过程/函数/序列/触发器列出来。取不到的类型留空。"""
+    fn = _OBJECTS_IMPL.get(self.name)
+    if not fn:
+        return _empty_objects()
+    try:
+        return fn(conn, schema)
+    except Exception:
+        return _empty_objects()
+
+
+def driver_source(self, conn, schema, name, kind):
+    """对象定义（DDL）。取不到返回空串，前端显示「该库不提供定义查询」。"""
+    fn = _SOURCE_IMPL.get(self.name)
+    if not fn:
+        return ""
+    try:
+        return fn(conn, schema, name, kind) or ""
+    except Exception:
+        return ""
+
+
+def driver_catalog(self, conn, schema, limit=400):
+    """补全字典：表名 + 列名 + 类型，一次批量查完（不走 N+1）。"""
+    fn = _CATALOG_IMPL.get(self.name)
+    if not fn:
+        return []
+    try:
+        rows = fn(conn, schema, limit) or []
+    except Exception:
+        return []
+    tables, order = {}, []
+    for r in rows:
+        t = _to_str(r[0])
+        if t not in tables:
+            if len(tables) >= limit:
+                continue
+            tables[t] = []
+            order.append(t)
+        tables[t].append([_to_str(r[1]), _to_str(r[2]) if len(r) > 2 else ""])
+    return [{"name": t, "columns": tables[t]} for t in order]
+
+
+Driver.objects = driver_objects
+Driver.source = driver_source
+Driver.catalog = driver_catalog

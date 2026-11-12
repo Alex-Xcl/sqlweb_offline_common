@@ -28,6 +28,8 @@ for p in (AUTHP, CFG):
 c = sqlite3.connect(DB)
 c.execute("DROP TABLE IF EXISTS t_user")
 c.execute("CREATE TABLE t_user(id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
+c.execute("DROP VIEW IF EXISTS v_user")
+c.execute("CREATE VIEW v_user AS SELECT name, age FROM t_user WHERE age > 18")
 c.executemany("INSERT INTO t_user(name, age) VALUES(?,?)",
               [("张三", 30), ("李四", 25), ("王五", 41)])
 c.commit()
@@ -170,6 +172,33 @@ check("表清单包含 t_user", sc == 200 and "t_user" in (b.get("data") or []),
 sc, hd, b = call("GET", "/api/columns?db=lite&schema=main&table=t_user", cookie=COOKIE["v"])
 check("列信息 3 列", sc == 200 and len(b.get("data") or []) == 3, str(b)[:300])
 print("       columns =", b.get("data"))
+
+print("=== 4b. 对象树（视图/过程/函数分组）===")
+sc, hd, b = call("GET", "/api/objects?db=lite&schema=main", cookie=COOKIE["v"])
+_obj = b.get("data") or {}
+check("objects 接口返回分组结构", sc == 200 and b.get("ok") is True and "table" in _obj, str(b)[:200])
+check("表分组含 t_user、视图分组含 v_user",
+      "t_user" in (_obj.get("table") or []) and "v_user" in (_obj.get("view") or []),
+      str(_obj)[:200])
+check("SQLite 无存储过程/函数（分组存在但为空）",
+      _obj.get("procedure") == [] and _obj.get("function") == [], str(_obj)[:200])
+
+sc, hd, b = call("GET", "/api/source?db=lite&schema=main&name=v_user&kind=view", cookie=COOKIE["v"])
+_src = b.get("data") or ""
+check("视图定义可取回且是 CREATE VIEW", sc == 200 and "CREATE VIEW" in _src.upper(), str(b)[:200])
+
+sc, hd, b = call("GET", "/api/source?db=lite&schema=main&name=no_such_obj&kind=view", cookie=COOKIE["v"])
+check("对象不存在时返回空定义而不是报错", sc == 200 and (b.get("data") or "") == "", str(b)[:200])
+
+sc, hd, b = call("GET", "/api/catalog?db=lite&schema=main", cookie=COOKIE["v"])
+_cat = b.get("data") or []
+_tn = [t for t in _cat if t.get("name") == "t_user"]
+check("补全字典带出表及列", sc == 200 and _tn and len(_tn[0].get("columns") or []) == 3,
+      str(_cat)[:300])
+
+sc, hd, b = call("GET", "/api/objects?db=lite&schema=main", cookie=COOKIE["v"])
+check("对象树二次请求命中缓存（仍返回同样数据）",
+      sc == 200 and "t_user" in ((b.get("data") or {}).get("table") or []), str(b)[:200])
 
 print("=== 5. SQL 执行 ===")
 sc, hd, b = call("POST", "/api/query", {"db": "lite", "sql": "SELECT * FROM t_user ORDER BY id"}, cookie=COOKIE["v"])
@@ -414,6 +443,65 @@ check("块式 DDL 整段只提交一次（不拆成两条碎片）",
 
 check("状态库权限 600（POSIX 生效，Windows 跳过）",
       os.name == "nt" or oct(os.stat(_sdb).st_mode)[-3:] == "600", oct(os.stat(_sdb).st_mode))
+
+# 元数据缓存：命中不重复查库；refresh 强制重查
+_hits = [0]
+_dummy = {"key": "lite", "database": ""}
+
+
+def _fetch():
+    _hits[0] += 1
+    return {"n": _hits[0]}
+
+
+sqlweb.meta_cache_clear()
+_a = sqlweb.meta_cached("t", sqlweb.meta_key(_dummy, "main"), False, _fetch)
+_b = sqlweb.meta_cached("t", sqlweb.meta_key(_dummy, "main"), False, _fetch)
+_c = sqlweb.meta_cached("t", sqlweb.meta_key(_dummy, "main"), True, _fetch)
+check("元数据缓存命中后不重复查询", _a == _b == {"n": 1}, "hits=%d" % _hits[0])
+check("refresh=1 强制重查（拿到新值）", _c == {"n": 2}, "hits=%d" % _hits[0])
+sqlweb.meta_cache_clear()
+
+
+# 连接复用：验活通过就复用同一条；验活失败就丢弃不复用
+class _ProbeCur(object):
+    def __init__(self, ok):
+        self.ok = ok
+
+    def execute(self, sql):
+        if not self.ok:
+            raise RuntimeError("conn dead")
+
+    def fetchall(self):
+        return []
+
+    def close(self):
+        pass
+
+
+class _ProbeConn(object):
+    def __init__(self, ok):
+        self.ok = ok
+        self.closed = False
+
+    def cursor(self):
+        return _ProbeCur(self.ok)
+
+    def close(self):
+        self.closed = True
+
+
+_pc = _ProbeConn(True)
+sqlweb.CONN_POOL.put("k1", _pc)
+check("连接复用：验活通过拿回同一条连接", sqlweb.CONN_POOL.get("k1", "SELECT 1") is _pc)
+_dead = _ProbeConn(False)
+sqlweb.CONN_POOL.put("k2", _dead)
+check("连接复用：验活失败丢弃并关闭", sqlweb.CONN_POOL.get("k2", "SELECT 1") is None and _dead.closed)
+check("连接复用：空闲上限 2 条，超出直接关掉",
+      (lambda: (sqlweb.CONN_POOL.drop_all(),
+                [sqlweb.CONN_POOL.put("k3", _ProbeConn(True)) for _ in range(3)],
+                len(sqlweb.CONN_POOL._idle.get("k3", [])) == 2)[-1])())
+sqlweb.CONN_POOL.drop_all()
 
 # 子路径模式：带前缀通、不带前缀 404 且页面写明正确地址与 nginx 写法
 _old_base = sqlweb.AppState.cfg.get("base_path")

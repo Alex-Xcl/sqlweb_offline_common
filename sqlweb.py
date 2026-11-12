@@ -24,10 +24,131 @@ import sys
 import threading
 import time
 import traceback
+import zlib
 from datetime import date, datetime, time as dtime, timedelta
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+
+# ---------------------------------------------------------------- 元数据缓存 / 连接复用
+# 设计取舍：对象树是「点一下查一次」的交互，不缓存的话每点一次都是一次握手 + 一次系统表查询。
+# 这里做两件很轻的事——短期 TTL 缓存（默认 120s）和空闲连接复用（每个数据源留 2 条）。
+# 不做结果集缓存、不做跨用户共享：元数据本来就不含业务数据，且每个请求仍然按当前数据源权限走。
+
+_META_CACHE = {}
+_META_LOCK = threading.Lock()
+_META_TTL = 120.0
+
+
+def meta_key(ds, schema):
+    return "%s|%s|%s" % (ds.get("key") or "", ds.get("database") or "", schema or "")
+
+
+def meta_cached(ns, key, force, fetch, ttl=None):
+    """短期缓存。fetch 抛异常不写缓存，错误原样抛给前端。"""
+    ttl = _META_TTL if ttl is None else ttl
+    ck = (ns, key)
+    now = time.time()
+    if not force:
+        with _META_LOCK:
+            hit = _META_CACHE.get(ck)
+        if hit and now - hit[0] < ttl:
+            return hit[1]
+    val = fetch()
+    with _META_LOCK:
+        _META_CACHE[ck] = (now, val)
+        if len(_META_CACHE) > 240:
+            for kk in list(_META_CACHE.keys())[:120]:
+                _META_CACHE.pop(kk, None)
+    return val
+
+
+def meta_cache_clear(dbkey=None):
+    with _META_LOCK:
+        if dbkey is None:
+            _META_CACHE.clear()
+        else:
+            for kk in list(_META_CACHE.keys()):
+                if kk[1] and str(kk[1]).startswith(str(dbkey) + "|"):
+                    _META_CACHE.pop(kk, None)
+
+
+def conn_key(ds):
+    return "%s|%s|%s|%s" % (ds.get("driver"), ds.get("key"), ds.get("database") or "",
+                            ds.get("host") or ds.get("path") or "")
+
+
+def probe_sql(ds):
+    # Oracle/达梦必须带 FROM DUAL
+    return "SELECT 1 FROM DUAL" if ds.get("driver") in ("oracle", "dameng") else "SELECT 1"
+
+
+def SKIP_POOL(ds):
+    # SQLite 连接有线程亲和（check_same_thread），复用跨线程会直接报错，索性不复用
+    return ds.get("driver") == "sqlite"
+
+
+class ConnPool(object):
+    """每个数据源最多留 2 条空闲连接，取出时验活。"""
+
+    MAX_IDLE = 2
+
+    def __init__(self):
+        self._idle = {}
+        self._lock = threading.Lock()
+
+    def get(self, key, probe):
+        with self._lock:
+            lst = self._idle.get(key)
+            conn = lst.pop() if lst else None
+        if conn is None:
+            return None
+        try:
+            cur = conn.cursor()
+            try:
+                cur.execute(probe)
+                cur.fetchall()
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+            return conn
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return None
+
+    def put(self, key, conn):
+        with self._lock:
+            lst = self._idle.setdefault(key, [])
+            if len(lst) >= self.MAX_IDLE:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                return
+            lst.append(conn)
+
+    def drop_all(self):
+        with self._lock:
+            keys = list(self._idle.keys())
+        for k in keys:
+            self.drop(k)
+
+    def drop(self, key):
+        with self._lock:
+            lst = self._idle.pop(key, [])
+        for c in lst:
+            try:
+                c.close()
+            except Exception:
+                pass
+
+
+CONN_POOL = ConnPool()
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -608,8 +729,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False, default=jsonable).encode("utf-8")
+        # 对象树、补全字典动辄上百 KB：压缩一下，经 nginx 转发时体验差别很明显
+        gz = len(body) > 2048 and "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
+        if gz:
+            body = zlib.compress(body, 6)
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -1253,21 +1381,76 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "db": ds["key"], "data": hits,
                                    "scanned": scanned, "truncated": truncated,
                                    "elapsed_ms": round((time.time() - t0) * 1000, 1)})
+
+            if path == "/api/objects":
+                # 对象树：一次把 schema 下的表/视图/过程/函数/序列/触发器分组返回，
+                # 前端展开一个模式只发一个请求（旧的 /api/tables 保留兼容）。
+                schema = (qs.get("schema") or ["public"])[0]
+                if not schema_in_scope(ds, schema):
+                    return self._err("模式「%s」不在该数据源开放范围内" % schema, 403, "perm")
+                force = (qs.get("refresh") or ["0"])[0] == "1"
+                key = meta_key(ds, schema)
+                data = meta_cached("objects", key, force,
+                                   lambda: self._with_conn(ds, drv, lambda c: drv.objects(c, schema)))
+                return self._json({"ok": True, "db": ds["key"], "data": data})
+
+            if path == "/api/source":
+                # 取对象定义（DDL）：视图 / 存储过程 / 函数 / 触发器
+                schema = (qs.get("schema") or [""])[0]
+                name = (qs.get("name") or [""])[0]
+                kind = (qs.get("kind") or ["view"])[0].lower()
+                if not schema_in_scope(ds, schema):
+                    return self._err("模式「%s」不在该数据源开放范围内" % schema, 403, "perm")
+                if not name:
+                    return self._err("缺少对象名", 400, "param")
+                key = meta_key(ds, schema) + "|" + kind + "|" + name
+                text = meta_cached("source", key, (qs.get("refresh") or ["0"])[0] == "1",
+                                   lambda: self._with_conn(
+                                       ds, drv, lambda c: drv.source(c, schema, name, kind)))
+                return self._json({"ok": True, "db": ds["key"], "schema": schema,
+                                   "name": name, "kind": kind, "data": text or ""})
+
+            if path == "/api/catalog":
+                # 编辑器自动联想用：schema 下的表 + 列（一次批量查，前端缓存住）
+                schema = (qs.get("schema") or ["public"])[0]
+                if not schema_in_scope(ds, schema):
+                    return self._err("模式「%s」不在该数据源开放范围内" % schema, 403, "perm")
+                key = meta_key(ds, schema)
+                data = meta_cached("catalog", key, (qs.get("refresh") or ["0"])[0] == "1",
+                                   lambda: self._with_conn(ds, drv, lambda c: drv.catalog(c, schema)),
+                                   ttl=300.0)
+                return self._json({"ok": True, "db": ds["key"], "data": data})
         except Exception as e:
             return self._err("%s: %s" % (type(e).__name__, e), stage="meta")
 
         self.send_error(404, "Not Found")
 
     def _with_conn(self, ds, drv, fn):
-        conn = drv.connect(ds, timeout=self._ct(),
-                           statement_timeout_ms=(AppState.cfg or {}).get("statement_timeout_ms", 30000))
+        """元数据/对象树查询走连接复用：点一次树就接一次库，接库开销比查询本身还大。
+        只复用「上一次成功用完」的连接，取出前先 SELECT 1 验活；出错就丢弃重连。"""
+        key = conn_key(ds)
+        conn = None
+        if not SKIP_POOL(ds):
+            conn = CONN_POOL.get(key, probe_sql(ds))
+        if conn is None:
+            conn = drv.connect(ds, timeout=self._ct(),
+                               statement_timeout_ms=(AppState.cfg or {}).get("statement_timeout_ms", 30000))
         try:
-            return fn(conn)
-        finally:
+            out = fn(conn)
+        except Exception:
             try:
                 conn.close()
             except Exception:
                 pass
+            raise
+        if SKIP_POOL(ds):
+            try:
+                conn.close()
+            except Exception:
+                pass
+        else:
+            CONN_POOL.put(key, conn)
+        return out
 
     def _schema_counts(self, conn, drv, schemas):
         """可见模式各自的表数。统计失败只影响右侧数字，绝不能让对象树加载失败。"""
@@ -1392,6 +1575,8 @@ class Handler(BaseHTTPRequestHandler):
                         "message": "只有管理员可以修改数据源", "stage": "perm"}}, 403)
                 # 多人并发改配置时串行化，避免两个请求同时 append 丢一条
                 with AppState.cfg_lock:
+                    meta_cache_clear()
+                    CONN_POOL.drop_all()
                     if path == "/api/ds/save":
                         return self._ds_save(payload)
                     if path == "/api/ds/delete":

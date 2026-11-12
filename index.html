@@ -406,6 +406,56 @@
   .rkv td { padding: 5px 10px; border-top: 1px solid #f1f5f9; color: #0f172a;
             font-variant-numeric: tabular-nums; }
   .rkv td.mono { font-family: Consolas, ui-monospace, monospace; word-break: break-all; }
+
+  /* ---------- 对象树：类型分组 ---------- */
+  .tnode.grp{font-size:11.5px}
+  .tnode.grp .nm{font-weight:600; color:var(--ink2); font-size:11.5px}
+  .tnode.grp .ic{color:var(--brand); font-size:10px}
+  .tnode.grp .cnt{color:var(--muted)}
+  .tnode.obj .ic{color:#98A1AE}
+  .tnode.obj .ic.v{color:#7C6BFF}
+  .tnode.obj .ic.p{color:#E0A03A}
+  .tnode.obj .ic.f{color:#2E9E8F}
+  .tnode.obj .ic.s{color:#8B93A1}
+
+  /* ---------- 编辑器：高亮层 + 补全下拉 ---------- */
+  .editor{position:relative}
+  .editor .hl{
+    position:absolute; inset:0; margin:0; border:0; z-index:0; pointer-events:none;
+    padding:14px 18px; overflow:hidden; background:var(--ed-bg);
+    font-family:var(--fm); font-size:13px; line-height:1.8; tab-size:2;
+    color:var(--ed-ink); white-space:pre-wrap; word-wrap:break-word; overflow-wrap:break-word;
+  }
+  .editor textarea{
+    position:relative; z-index:1; background:transparent; color:transparent;
+    caret-color:#9DB3FF; white-space:pre-wrap; word-wrap:break-word;
+  }
+  .editor textarea::selection{background:rgba(58,92,255,.30); color:transparent}
+  .tk-k{color:#7C9CFF; font-weight:600}
+  .tk-s{color:#89D18B}
+  .tk-n{color:#F5B36B}
+  .tk-c{color:#66707C; font-style:italic}
+  .tk-f{color:#E4C48A}
+  .acbox{
+    position:absolute; z-index:40; display:none; max-height:210px; overflow:auto;
+    min-width:220px; max-width:420px; padding:4px; border-radius:6px;
+    background:#171D26; border:1px solid rgba(124,156,255,.25);
+    box-shadow:0 10px 30px -8px rgba(0,0,0,.6); font-family:var(--fm); font-size:12px;
+  }
+  .acbox.show{display:block}
+  .acbox .aitem{padding:5px 9px; border-radius:4px; cursor:pointer; display:flex; gap:10px;
+    color:var(--ed-ink); white-space:nowrap}
+  .acbox .aitem .ak{color:#66707C; font-size:10.5px; margin-left:auto}
+  .acbox .aitem.on{background:rgba(58,92,255,.28)}
+  .acbox .aitem .ad{color:#8A94A3}
+
+  /* ---------- 对象定义弹窗 ---------- */
+  .srcbox{
+    margin:0; padding:16px 18px; overflow:auto; flex:1; min-height:200px; max-height:66vh;
+    background:var(--ed-bg); color:var(--ed-ink); border-radius:0 0 var(--r-shell) var(--r-shell);
+    font-family:var(--fm); font-size:12.6px; line-height:1.75; white-space:pre-wrap; word-break:break-word;
+  }
+  .srcbox .dim{color:var(--ed-dim)}
 </style>
 </head>
 <body>
@@ -446,7 +496,9 @@
     </div>
 
     <div class="editor">
+      <pre class="hl" id="hl" aria-hidden="true"></pre>
       <textarea id="sql" spellcheck="false" placeholder="SELECT * FROM ..."></textarea>
+      <div class="acbox" id="ac"></div>
     </div>
 
     <div class="splitter" id="splitter"></div>
@@ -597,6 +649,18 @@
   </div>
 </div>
 
+<div class="modal" id="modalSrc">
+  <div class="box" style="max-width:920px">
+    <div class="mhead">
+      <h3 id="srcTitle">对象定义</h3>
+      <div class="grow"></div>
+      <button class="btn" id="btnSrcCopy" style="height:26px;font-size:11.5px">复制</button>
+      <button class="x" id="closeSrc">×</button>
+    </div>
+    <pre class="srcbox" id="srcPre"></pre>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 <script>
 (function () {
@@ -611,6 +675,7 @@
     schemas: [], overview: null, expanded: {}, currentSchema: "",
     dbLibs: {}, schemaCounts: {},
     treeQ: "", searchHits: null, searchMeta: null, searchTimer: null,
+    groupOpen: {}, catalogs: {}, catalogPending: {},
     formDriver: "", editingKind: null,
     lastResult: null, editingKey: null, busy: false,
     canManage: false, role: "user", me: "",
@@ -1013,22 +1078,41 @@
                "</div>");
         if (!open) return;
         if (node.loading) {
-          h.push('<div class="treeload" style="padding-left:' + ((depth + 1) * 16) + 'px">加载表…</div>');
+          h.push('<div class="treeload" style="padding-left:' + ((depth + 1) * 16) + 'px">加载对象…</div>');
           return;
         }
-        var all = node.tables || [];
-        // 本地搜索：已加载的表按关键字过滤；跨模式全量搜索走后端 /api/search_tables
-        var tbls = q ? all.filter(function (t) { return String(t).toLowerCase().indexOf(q) >= 0; }) : all;
-        if (!tbls.length) {
-          h.push('<div class="treeload" style="padding-left:' + ((depth + 1) * 16) + 'px">' +
-                 (q && all.length ? "无匹配表" : "（无表）") + "</div>");
-          return;
-        }
-        tbls.forEach(function (t) {
-          h.push('<div class="tnode depth' + (depth + 1) + '" data-schema="' + esc(s) +
-                 '" data-table="' + esc(t) + '">' +
-                 '<span class="ic">▪</span><span class="nm" title="' + esc(t) + '">' + esc(t) + "</span></div>");
+        // 按类型分组：表 / 视图 / 存储过程 / 函数 / 序列 / 触发器（空组不显示）
+        var objs = node.objs || { table: node.tables || [] };
+        var shown = 0;
+        OBJ_GROUPS.forEach(function (g) {
+          var list = objs[g.k] || [];
+          // 本地搜索：已加载的对象按关键字过滤；跨模式全量搜索走后端 /api/search_tables
+          if (q) list = list.filter(function (t) { return String(t).toLowerCase().indexOf(q) >= 0; });
+          if (!list.length) return;
+          shown += list.length;
+          var gk = s + "::" + g.k;
+          var open = state.groupOpen[gk] !== false;
+          h.push('<div class="tnode grp depth' + (depth + 1) + '" data-group="' + esc(gk) +
+                 '" title="' + esc(g.label + " 共 " + list.length + " 个") + '">' +
+                 '<span class="ic">' + (open ? "▾" : "▸") + "</span>" +
+                 '<span class="nm">' + esc(g.label) + "</span>" +
+                 '<span class="cnt">' + list.length + "</span></div>");
+          if (!open) return;
+          list.forEach(function (nm) {
+            var tip = s + "." + nm + "  ·  " + g.label +
+                      (g.k === "table" ? "（单击看结构，双击生成查询）" : "（单击看定义）");
+            h.push('<div class="tnode obj depth' + (depth + 2) + '" data-schema="' + esc(s) +
+                   '" data-kind="' + g.k + '"' +
+                   (g.k === "table" ? ' data-table="' + esc(nm) + '"' : ' data-obj="' + esc(nm) + '"') +
+                   ' title="' + esc(tip) + '">' +
+                   '<span class="ic ' + g.ic + '">' + g.sym + '</span>' +
+                   '<span class="nm mono">' + esc(nm) + "</span></div>");
+          });
         });
+        if (!shown) {
+          h.push('<div class="treeload" style="padding-left:' + ((depth + 1) * 16) + 'px">' +
+                 (q ? "无匹配对象" : "（无对象）") + "</div>");
+        }
       });
     }
 
@@ -1045,7 +1129,12 @@
     var tsum = 0;
     Object.keys(state.expanded || {}).forEach(function (k) {
       var nd = state.expanded[k];
-      if (nd && nd.tables) tsum += nd.tables.length;
+      if (!nd) return;
+      if (nd.objs) {
+        Object.keys(nd.objs).forEach(function (kk) { tsum += (nd.objs[kk] || []).length; });
+      } else if (nd.tables) {
+        tsum += nd.tables.length;
+      }
     });
     $("treeCnt").textContent = tsum ? (" · " + tsum) : "";
     // 树尾交代“这是哪台机器、哪个库”，抬头就知道自己在哪
@@ -1092,25 +1181,28 @@
   function toggleSchema(s) {
     state.currentSchema = s;
     var node = state.expanded[s];
-    if (node && !node.loading && node.tables) {
+    if (node && !node.loading && node.objs) {
       delete state.expanded[s];
       renderTree();
       return;
     }
-    state.expanded[s] = { loading: true, tables: [] };
+    state.expanded[s] = { loading: true, objs: null, tables: [] };
     renderTree();
-    var u = "/api/tables?db=" + enc(state.db) + "&schema=" + enc(s);
+    var u = "/api/objects?db=" + enc(state.db) + "&schema=" + enc(s);
     if (state.database) u += "&database=" + enc(state.database);
     apiGet(u).then(function (d) {
       if (d.ok) {
-        state.expanded[s] = { loading: false, tables: d.data || [] };
+        var o = d.data || {};
+        state.expanded[s] = { loading: false, objs: o, tables: o.table || [] };
+        // 顺手把补全字典拉回来（表+列），下次敲编辑器就不用等
+        ensureCatalog(s);
       } else {
-        state.expanded[s] = { loading: false, tables: [] };
-        toast(errMsg(d, "加载表失败"));
+        state.expanded[s] = { loading: false, objs: null, tables: [] };
+        toast(errMsg(d, "加载对象失败"));
       }
       renderTree();
     }).catch(function (e) {
-      state.expanded[s] = { loading: false, tables: [] };
+      state.expanded[s] = { loading: false, objs: null, tables: [] };
       renderTree();
       toast(e.message);
     });
@@ -1722,8 +1814,21 @@
     var lib = el.getAttribute("data-lib");
     var sch = el.getAttribute("data-schema");
     var tbl = el.getAttribute("data-table");
+    var grp = el.getAttribute("data-group");
+    var obj = el.getAttribute("data-obj");
+    var kind = el.getAttribute("data-kind");
     if (lib) {
       toggleDb(lib);
+      return;
+    }
+    if (grp) {
+      state.groupOpen[grp] = state.groupOpen[grp] === false;
+      renderTree();
+      return;
+    }
+    if (obj) {
+      state.currentSchema = sch;
+      openSource(sch, obj, kind);
       return;
     }
     if (tbl) {
@@ -2537,6 +2642,360 @@
     if (d.ok) state.drivers = (d.data || []).concat([REDIS_DRIVER]);
     renderDbSelect();
   }).catch(function () {});
+
+
+  /* ============================================================
+     对象类型分组 / 定义查看 / 语法高亮 / 自动补全
+     ============================================================ */
+  var OBJ_GROUPS = [
+    { k: "table",     label: "表",     sym: "▪", ic: "" },
+    { k: "view",      label: "视图",   sym: "◇", ic: "v" },
+    { k: "procedure", label: "存储过程", sym: "❖", ic: "p" },
+    { k: "function",  label: "函数",   sym: "ƒ", ic: "f" },
+    { k: "sequence",  label: "序列",   sym: "#", ic: "s" },
+    { k: "trigger",   label: "触发器", sym: "⚡", ic: "s" }
+  ];
+  var KIND_LABEL = {};
+  OBJ_GROUPS.forEach(function (g) { KIND_LABEL[g.k] = g.label; });
+
+  function curSchema() {
+    return state.currentSchema || (state.schemas && state.schemas[0]) || "";
+  }
+
+  /* ---------- 对象定义 ---------- */
+  function openSource(schema, name, kind) {
+    $("srcTitle").textContent = (KIND_LABEL[kind] || kind) + "  ·  " + name + (schema ? "  ·  " + schema : "");
+    $("srcPre").innerHTML = '<span class="dim">读取定义…</span>';
+    $("modalSrc").classList.add("show");
+    var u = "/api/source?db=" + enc(state.db) + "&schema=" + enc(schema) +
+            "&name=" + enc(name) + "&kind=" + enc(kind || "view");
+    if (state.database) u += "&database=" + enc(state.database);
+    apiGet(u).then(function (d) {
+      if (!d.ok) throw new Error(errMsg(d, "读取定义失败"));
+      var txt = d.data || "";
+      $("srcPre").innerHTML = txt ? hlSQL(txt)
+        : '<span class="dim">该库没有返回这个对象的定义（可能权限不够，或这类对象不提供查询来源）。</span>';
+    }).catch(function (e) {
+      $("srcPre").innerHTML = '<span class="dim">' + esc(e.message) + "</span>";
+    });
+  }
+  function closeSource() { $("modalSrc").classList.remove("show"); }
+  $("closeSrc").addEventListener("click", closeSource);
+  $("modalSrc").addEventListener("click", function (ev) {
+    if (ev.target === this) closeSource();
+  });
+  $("btnSrcCopy").addEventListener("click", function () {
+    var txt = $("srcPre").textContent || "";
+    if (!txt) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(function () { toast("已复制"); })
+        .catch(function () { toast("复制失败，手动选中吧"); });
+    } else { toast("浏览器不允许直接复制，手动选中吧"); }
+  });
+
+  /* ---------- 语法高亮（textarea + 高亮层叠加，零外部依赖） ---------- */
+  var KW_LIST = ("select from where and or not null is in exists between like ilike join inner left right " +
+    "full outer cross natural on using group by order asc desc limit offset fetch having union intersect " +
+    "except all distinct as case when then else end insert into values update set delete merge create " +
+    "table view index unique procedure function trigger sequence synonym schema database temporary " +
+    "primary key foreign references default constraint check cascade drop alter add column rename " +
+    "truncate begin commit rollback transaction savepoint declare if loop while for repeat exit return " +
+    "cursor open close execute call print raise grant revoke with recursive over partition window " +
+    "cast convert coalesce isnull nvl nvl2 decode substr substring length trim ltrim rtrim upper lower " +
+    "replace round floor ceil abs mod power greatest least row_number rank dense_rank lag lead " +
+    "current_date current_timestamp current_user session_user dual explain analyze show use values " +
+    "interval date time timestamp to_char to_date to_number sysdate sysdatetime rowid rownum top like " +
+    "escape collate auto_increment identity engine charset comment").split(" ");
+  var KWSET = {};
+  KW_LIST.forEach(function (w) { KWSET[w] = 1; });
+
+  function hlSQL(text) {
+    var s = String(text == null ? "" : text);
+    var out = [], i = 0, n = s.length, buf = "";
+    function flush() { if (buf) { out.push(buf); buf = ""; } }
+    while (i < n) {
+      var c = s.charAt(i);
+      if (c === "-" && s.charAt(i + 1) === "-") {
+        var j = s.indexOf("\n", i);
+        if (j < 0) j = n;
+        flush(); out.push('<span class="tk-c">' + esc(s.slice(i, j)) + "</span>");
+        i = j; continue;
+      }
+      if (c === "/" && s.charAt(i + 1) === "*") {
+        var j2 = s.indexOf("*/", i + 2);
+        j2 = j2 < 0 ? n : j2 + 2;
+        flush(); out.push('<span class="tk-c">' + esc(s.slice(i, j2)) + "</span>");
+        i = j2; continue;
+      }
+      if (c === "'" || c === '"' || c === "`") {
+        var q = c, j3 = i + 1;
+        while (j3 < n) {
+          if (s.charAt(j3) === q) {
+            if (s.charAt(j3 + 1) === q) { j3 += 2; continue; }
+            j3 += 1; break;
+          }
+          j3 += 1;
+        }
+        flush(); out.push('<span class="tk-s">' + esc(s.slice(i, j3)) + "</span>");
+        i = j3; continue;
+      }
+      if (c >= "0" && c <= "9") {
+        var j4 = i;
+        while (j4 < n && ("0123456789.".indexOf(s.charAt(j4)) >= 0)) j4 += 1;
+        flush(); out.push('<span class="tk-n">' + esc(s.slice(i, j4)) + "</span>");
+        i = j4; continue;
+      }
+      if (/[A-Za-z_@$#]/.test(c)) {
+        var j5 = i;
+        while (j5 < n && /[A-Za-z0-9_@$#]/.test(s.charAt(j5))) j5 += 1;
+        var w = s.slice(i, j5);
+        if (KWSET[w.toLowerCase()]) {
+          flush(); out.push('<span class="tk-k">' + esc(w) + "</span>");
+        } else if (s.charAt(j5) === "(") {
+          flush(); out.push('<span class="tk-f">' + esc(w) + "</span>");
+        } else {
+          buf += esc(w);
+        }
+        i = j5; continue;
+      }
+      buf += esc(c);
+      i += 1;
+    }
+    flush();
+    return out.join("");
+  }
+
+  function syncHL() {
+    var ta = $("sql"), pre = $("hl");
+    if (!ta || !pre) return;
+    pre.innerHTML = hlSQL(ta.value) + "\n";
+    pre.scrollTop = ta.scrollTop;
+    pre.scrollLeft = ta.scrollLeft;
+  }
+
+  /* ---------- 自动补全 ---------- */
+  var AC = { items: [], idx: -1, start: 0, end: 0, open: false };
+  var REF_KW = {"from": 1, "join": 1, "into": 1, "update": 1, "table": 1, "where": 1, "set": 1,
+                "on": 1, "and": 1, "or": 1, "as": 1, "group": 1, "order": 1, "by": 1, "having": 1,
+                "select": 1, "insert": 1, "values": 1, "left": 1, "right": 1, "inner": 1, "outer": 1,
+                "full": 1, "cross": 1, "union": 1, "all": 1, "distinct": 1, "limit": 1, "is": 1,
+                "not": 1, "null": 1, "when": 1, "then": 1, "else": 1, "end": 1};
+
+  function ensureCatalog(schema) {
+    schema = schema || curSchema();
+    if (!schema) return;
+    if (state.catalogs[schema] || state.catalogPending[schema]) return;
+    state.catalogPending[schema] = true;
+    var u = "/api/catalog?db=" + enc(state.db) + "&schema=" + enc(schema);
+    if (state.database) u += "&database=" + enc(state.database);
+    apiGet(u).then(function (d) {
+      if (d.ok) state.catalogs[schema] = d.data || [];
+    }).catch(function () {}).then(function () { state.catalogPending[schema] = false; });
+  }
+
+  // FROM/JOIN 后面出现的表名与别名，用来把 "别名.列" 补全成真列
+  function parseRefs(text) {
+    var refs = {}, re = /(?:from|join|update|into)\s+("([^"]+)"|`([^`]+)`|\[([^\]]+)\]|([A-Za-z0-9_$#.]+))(\s+(?:as\s+)?([A-Za-z0-9_$#]+))?/gi, m;
+    while ((m = re.exec(text))) {
+      var raw = (m[2] || m[3] || m[4] || m[5] || "").replace(/["`\[\]]/g, "");
+      if (!raw) continue;
+      var tbl = raw.split(".").pop();
+      refs[tbl.toLowerCase()] = tbl;
+      var al = (m[7] || "").toLowerCase();
+      if (al && !REF_KW[al]) refs[al] = tbl;
+    }
+    return refs;
+  }
+
+  function catalogOf(schema) {
+    schema = schema || curSchema();
+    var list = state.catalogs[schema];
+    if (list) return list;
+    var node = state.expanded[schema];
+    if (node && node.objs) {
+      var fake = [];
+      (node.objs.table || []).concat(node.objs.view || []).forEach(function (t) {
+        fake.push({ name: t, columns: [] });
+      });
+      return fake;
+    }
+    return [];
+  }
+
+  function contextBefore() {
+    var ta = $("sql"), pos = ta.selectionStart;
+    var before = ta.value.slice(0, pos);
+    var m = before.match(/[A-Za-z0-9_$#.@]+$/);
+    if (!m) return null;
+    var word = m[0];
+    var start = pos - word.length;
+    var qual = "", pre = word;
+    var dot = word.lastIndexOf(".");
+    if (dot >= 0) { qual = word.slice(0, dot); pre = word.slice(dot + 1); }
+    return { word: word, pre: pre, qual: qual, start: start, end: pos, sql: ta.value };
+  }
+
+  function candidates(ctx) {
+    var out = [], seen = {}, add = function (text, kind) {
+      var kk = kind + "|" + text.toLowerCase();
+      if (seen[kk]) return;
+      seen[kk] = 1;
+      out.push({ text: text, kind: kind });
+    };
+    var pre = ctx.pre.toLowerCase();
+    var refs = parseRefs(ctx.sql);
+    var cat = catalogOf();
+
+    if (ctx.qual) {
+      // 别名/表名 → 该表的列
+      var tbl = refs[ctx.qual.toLowerCase()] || ctx.qual.split(".").pop();
+      for (var i = 0; i < cat.length; i++) {
+        if (String(cat[i].name).toLowerCase() === String(tbl).toLowerCase()) {
+          (cat[i].columns || []).forEach(function (c) { add(c[0], "列"); });
+          break;
+        }
+      }
+    } else {
+      // 关键字 + 表/视图 + （SQL 里只涉及一张表时）它的列
+      KW_LIST.forEach(function (w) { add(w, "关键字"); });
+      cat.forEach(function (t) { add(t.name, "对象"); });
+      var tables = Object.keys(refs);
+      if (tables.length === 1) {
+        var only = refs[tables[0]];
+        for (var j = 0; j < cat.length; j++) {
+          if (String(cat[j].name).toLowerCase() === String(only).toLowerCase()) {
+            (cat[j].columns || []).forEach(function (c) { add(c[0], "列"); });
+            break;
+          }
+        }
+      }
+    }
+    var hits = out.filter(function (x) { return pre ? x.text.toLowerCase().indexOf(pre) === 0 : true; });
+    // 前缀命中的排前面，其次越短越靠前
+    hits.sort(function (a, b) { return a.text.length - b.text.length; });
+    return hits.slice(0, 14);
+  }
+
+  function acHide() {
+    AC.open = false; AC.items = []; AC.idx = -1;
+    var b = $("ac");
+    if (b) { b.classList.remove("show"); b.innerHTML = ""; }
+  }
+
+  function acRender() {
+    var b = $("ac");
+    b.innerHTML = AC.items.map(function (x, i) {
+      return '<div class="aitem' + (i === AC.idx ? " on" : "") + '" data-i="' + i + '">' +
+        '<span>' + esc(x.text) + '</span><span class="ak">' + esc(x.kind) + "</span></div>";
+    }).join("");
+    b.classList.add("show");
+    var on = b.querySelector(".aitem.on");
+    if (on && on.scrollIntoView) on.scrollIntoView({ block: "nearest" });
+  }
+
+  function caretXY(ta) {
+    var mirror = document.getElementById("acmirror");
+    if (!mirror) {
+      mirror = document.createElement("div");
+      mirror.id = "acmirror";
+      document.body.appendChild(mirror);
+    }
+    var cs = window.getComputedStyle(ta);
+    var tr = ta.getBoundingClientRect();
+    // 用 position:fixed 贴着 textarea 的真实位置，再把整体上移 scrollTop，
+    // 这样 span 的视口坐标减去 tr 就是编辑器内的相对位置（不受页面滚动影响）
+    mirror.style.cssText = "position:fixed;visibility:hidden;white-space:pre-wrap;word-wrap:break-word;" +
+      "font-family:" + cs.fontFamily + ";font-size:" + cs.fontSize + ";line-height:" + cs.lineHeight +
+      ";letter-spacing:" + cs.letterSpacing + ";padding:" + cs.padding + ";border:0;margin:" +
+      (-ta.scrollTop) + "px 0 0 0;box-sizing:" + cs.boxSizing + ";width:" + ta.clientWidth + "px;" +
+      "left:" + tr.left + "px;top:" + tr.top + "px;";
+    mirror.textContent = ta.value.slice(0, ta.selectionStart);
+    var span = document.createElement("span");
+    span.textContent = "\u200b";
+    mirror.appendChild(span);
+    var r = span.getBoundingClientRect();
+    var xy = { x: r.left - tr.left, y: r.top - tr.top };
+    mirror.parentNode.removeChild(mirror);
+    return xy;
+  }
+
+  function acUpdate() {
+    var ta = $("sql");
+    if (!ta) return;
+    var ctx = contextBefore();
+    if (!ctx) { acHide(); return; }
+    // 只有「表.」这种限定符时不带前缀也要出列名（Navicat 就是这么给的）
+    if (ctx.pre.length < 1 && !ctx.qual) { acHide(); return; }
+    if (!state.catalogs[curSchema()]) ensureCatalog();
+    var items = candidates(ctx);
+    if (!items.length) { acHide(); return; }
+    AC.items = items; AC.idx = 0; AC.start = ctx.start; AC.end = ctx.end; AC.open = true;
+    var xy = caretXY(ta);
+    var box = $("ac");
+    var w = ta.offsetWidth;
+    box.style.left = Math.min(Math.max(0, xy.x), Math.max(0, w - 240)) + "px";
+    box.style.top = (xy.y + 22) + "px";
+    acRender();
+  }
+
+  function acApply() {
+    var it = AC.items[AC.idx];
+    if (!it) { acHide(); return false; }
+    var ta = $("sql");
+    ta.value = ta.value.slice(0, AC.start) + it.text + ta.value.slice(AC.end);
+    var p = AC.start + it.text.length;
+    ta.selectionStart = ta.selectionEnd = p;
+    acHide();
+    syncHL();
+    return true;
+  }
+
+  $("ac").addEventListener("mousedown", function (ev) {
+    var it = ev.target;
+    while (it && !it.getAttribute("data-i")) it = it.parentNode;
+    if (!it || it === this) return;
+    ev.preventDefault();
+    AC.idx = parseInt(it.getAttribute("data-i"), 10) || 0;
+    acApply();
+  });
+
+  $("sql").addEventListener("keydown", function (ev) {
+    if (AC.open) {
+      if (ev.key === "ArrowDown") { ev.preventDefault(); AC.idx = Math.min(AC.items.length - 1, AC.idx + 1); acRender(); return; }
+      if (ev.key === "ArrowUp") { ev.preventDefault(); AC.idx = Math.max(0, AC.idx - 1); acRender(); return; }
+      if (ev.key === "Escape") { ev.preventDefault(); acHide(); return; }
+      if (ev.key === "Enter" || ev.key === "Tab") {
+        if (AC.items.length) { ev.preventDefault(); acApply(); return; }
+      }
+    }
+    // Tab 缩进：两空格，不跳焦点
+    if (ev.key === "Tab" && !AC.open) {
+      ev.preventDefault();
+      var s = this.selectionStart, e = this.selectionEnd;
+      this.value = this.value.slice(0, s) + "  " + this.value.slice(e);
+      this.selectionStart = this.selectionEnd = s + 2;
+      syncHL();
+    }
+  });
+  $("sql").addEventListener("input", function () { syncHL(); acUpdate(); });
+  $("sql").addEventListener("click", function () { acHide(); });
+  $("sql").addEventListener("blur", function () { setTimeout(acHide, 120); });
+  $("sql").addEventListener("scroll", function () {
+    $("hl").scrollTop = this.scrollTop;
+    $("hl").scrollLeft = this.scrollLeft;
+  });
+
+  // 程序化改 value（双击表生成 SQL、清空）也要刷新高亮
+  (function () {
+    var ta = $("sql");
+    ta.addEventListener("change", syncHL);
+    ["btnClear"].forEach(function (id) {
+      var b = $(id);
+      if (b) b.addEventListener("click", function () { setTimeout(syncHL, 0); });
+    });
+  })();
+  syncHL();
+
 
   /* 启动 */
   loadConfig().catch(function (e) { toast(e.message); });
