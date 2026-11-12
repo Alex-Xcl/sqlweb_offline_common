@@ -21,6 +21,7 @@ import json
 import os
 import secrets
 import sys
+import threading
 import time
 import traceback
 from datetime import date, datetime, time as dtime, timedelta
@@ -32,13 +33,21 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+# 随包携带的纯 Python 驱动（vendor/ 解包版）。
+# 目的：目标机没有 pip、没有 venv、没有外网，甚至 Python 只有 3.7 时，
+# pip 会因为 Requires-Python（pg8000/scramp/dm-pure 声明 >=3.8）直接拒装；
+# 这些包本身是纯 Python 代码，解包后加到 sys.path 就能用。
+VENDOR = os.path.join(HERE, "vendor")
+if os.path.isdir(VENDOR) and VENDOR not in sys.path:
+    sys.path.insert(0, VENDOR)
+
 import drivers
 import captcha
 import redis_panel
 from auth import (AuthStore, SessionManager, RateLimiter, CaptchaStore,
                   parse_cookie, SESSION_TTL)
 
-APP_VERSION = "common-1.0.0"
+APP_VERSION = "common-1.3.0"
 
 CONFIG_PATH = os.path.join(HERE, "config.json")
 INDEX_PATH = os.path.join(HERE, "index.html")
@@ -84,6 +93,10 @@ def load_config(path=None):
         d.setdefault("driver", "postgresql")
         d.setdefault("readonly", cfg.get("readonly", True))
         d.setdefault("port", drivers.DEFAULT_PORTS.get((d.get("driver") or "").lower(), ""))
+        d.setdefault("visible_schemas", [])
+        if isinstance(d.get("visible_schemas"), str):
+            d["visible_schemas"] = [x.strip() for x in
+                                    d["visible_schemas"].replace("，", ",").split(",") if x.strip()]
         dbs.append(d)
     cfg["databases"] = dbs
     if not cfg.get("default_db") and dbs:
@@ -141,7 +154,98 @@ def public_ds(d):
         "dbname": d.get("dbname") or "",
         "path": d.get("path") or "",
         "readonly": bool(d.get("readonly", True)),
+        "visible_schemas": list(d.get("visible_schemas") or []),
     }
+
+
+# ---------------------------------------------------------------- 账号可见范围
+def allow_dbs_of(user):
+    """该账号能看的数据源 key 集合。返回 None 表示不受限（管理员）。"""
+    u = AppState.auth.get(user) if AppState.auth else None
+    if not u:
+        return []
+    if (u.get("role") or "") == "admin":
+        return None
+    return [str(x) for x in (u.get("allow_dbs") or [])]
+
+
+def ds_allowed(user, key):
+    allow = allow_dbs_of(user)
+    return True if allow is None else (key in allow)
+
+
+def visible_dbs(user):
+    """按账号授权过滤后的数据源列表（管理员=全部）。"""
+    allow = allow_dbs_of(user)
+    dbs = (AppState.cfg or {}).get("databases") or []
+    if allow is None:
+        return list(dbs)
+    return [d for d in dbs if d.get("key") in allow]
+
+
+def schema_in_scope(ds, schema):
+    """数据源级 visible_schemas 白名单；未配置=全部可见。"""
+    white = ds.get("visible_schemas") or []
+    if not white:
+        return True
+    return str(schema or "").strip().upper() in {str(w).strip().upper() for w in white}
+
+
+def filter_schemas(ds, schemas):
+    white = ds.get("visible_schemas") or []
+    if not white:
+        return list(schemas)
+    return [s for s in schemas if schema_in_scope(ds, s)]
+
+
+# ---------------------------------------------------------------- Redis 可见范围
+def allow_redis_of(user):
+    """该账号能看的 Redis 实例 key 集合。返回 None 表示不受限（管理员）。"""
+    u = AppState.auth.get(user) if AppState.auth else None
+    if not u:
+        return []
+    if (u.get("role") or "") == "admin":
+        return None
+    return [str(x) for x in (u.get("allow_redis") or [])]
+
+
+def visible_redis(user):
+    """按账号授权过滤后的 Redis 实例列表（管理员=全部）。"""
+    allow = allow_redis_of(user)
+    insts = (AppState.cfg or {}).get("_redis") or []
+    if allow is None:
+        return list(insts)
+    return [i for i in insts if i.get("key") in allow]
+
+
+def public_redis(inst):
+    """对外暴露的实例信息：不含口令、不含账号。"""
+    return {
+        "key": inst.get("key"),
+        "label": inst.get("label"),
+        "host": inst.get("host"),
+        "port": inst.get("port"),
+        "db": inst.get("db"),
+        "readonly": bool(inst.get("readonly", True)),
+        "has_auth": bool(inst.get("password")),
+    }
+
+
+def redis_allowed(user, key):
+    allow = allow_redis_of(user)
+    return True if allow is None else (key in allow)
+
+
+def get_redis(cfg, key):
+    insts = (cfg or {}).get("_redis") or []
+    if not insts:
+        return None
+    if not key:
+        return insts[0]
+    for i in insts:
+        if i.get("key") == key:
+            return i
+    return None
 
 
 # ---------------------------------------------------------------- SQL 工具
@@ -375,6 +479,8 @@ class AppState(object):
     init_token = None
     started_at = time.time()
     log = None
+    # 多账号并发时，改 config.json 的几个接口要串行化（查询本身不锁，每请求独立连接）
+    cfg_lock = threading.Lock()
 
     @classmethod
     def logmsg(cls, msg):
@@ -469,6 +575,14 @@ class Handler(BaseHTTPRequestHandler):
     def _session(self):
         return AppState.sessions.get(self._token())
 
+    def _cur_user(self):
+        return (self._session() or {}).get("user") or ""
+
+    def _forbid_ds(self, key):
+        return self._json({"ok": False, "error": {
+            "message": "当前账号没有访问数据源「%s」的权限" % (key or ""),
+            "stage": "perm"}}, 403)
+
     def _need_auth(self):
         """未登录返回 True（并已输出 401）。"""
         if self._session():
@@ -505,11 +619,15 @@ class Handler(BaseHTTPRequestHandler):
     # ---- 登录 / 初始化 / 登出 ----
     def _post_login(self, payload):
         ip = self._ip()
+        user = (payload.get("username") or "").strip()
+        pwd = payload.get("password") or ""
         if not AppState.auth.initialized:
             return self._json({"ok": False, "error": {
                 "message": "服务尚未初始化，请先设置管理员账号", "stage": "setup"}}, 400)
 
-        ok_rate, wait = AppState.limiter.allow(ip)
+        # 限速按「IP+账号」：同一台机器多人用不同账号登录时，一个人输错不会牵连别人
+        rkey = "%s|%s" % (ip, user)
+        ok_rate, wait = AppState.limiter.allow(rkey)
         if not ok_rate:
             return self._json({"ok": False, "error": {
                 "message": "登录失败次数过多，请 %d 秒后重试" % wait, "stage": "rate"}}, 429)
@@ -520,22 +638,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": {
                 "message": "验证码已失效，请刷新后重试", "stage": "captcha"}}, 400)
         if given != code:
-            AppState.limiter.fail(ip)
+            AppState.limiter.fail(rkey)
             return self._json({"ok": False, "error": {
                 "message": "验证码不正确", "stage": "captcha"}}, 400)
 
-        user = (payload.get("username") or "").strip()
-        pwd = payload.get("password") or ""
         if not AppState.auth.verify(user, pwd):
-            AppState.limiter.fail(ip)
+            AppState.limiter.fail(rkey)
             return self._json({"ok": False, "error": {
                 "message": "用户名或口令不正确", "stage": "credential"}}, 401)
 
-        AppState.limiter.reset(ip)
-        token = AppState.sessions.create(AppState.auth.user, ip)
+        AppState.limiter.reset(rkey)
+        token = AppState.sessions.create(user, ip)
         cookie = "sw_session=%s; Path=%s; HttpOnly; SameSite=Strict; Max-Age=%d" % (
             token, (self._base() or "") + "/", SESSION_TTL)
-        body = json.dumps({"ok": True, "user": AppState.auth.user}).encode("utf-8")
+        body = json.dumps({"ok": True, "user": user,
+                           "role": (AppState.auth.get(user) or {}).get("role") or "user",
+                           "can_manage": AppState.auth.is_admin(user)}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -543,7 +661,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
-        AppState.logmsg("登录成功 user=%s ip=%s" % (AppState.auth.user, ip))
+        AppState.logmsg("登录成功 user=%s ip=%s 在线会话=%d"
+                        % (user, ip, AppState.sessions.count()))
 
     def _post_setup(self, payload):
         if AppState.auth.initialized:
@@ -665,6 +784,15 @@ class Handler(BaseHTTPRequestHandler):
             entry["host"] = ""
             entry["port"] = ""
 
+        # 可见模式白名单：对象树与元数据接口只暴露这些 schema（留空 = 全部）
+        vs = d.get("visible_schemas")
+        if isinstance(vs, str):
+            s = vs.replace("，", ",").replace("；", ",").replace(";", ",").replace("\n", ",")
+            vs = s.split(",")
+        elif not isinstance(vs, (list, tuple)):
+            vs = []
+        entry["visible_schemas"] = [str(x).strip() for x in vs if str(x).strip()]
+
         exists = None
         for x in dbs:
             if x.get("key") == key and key:
@@ -734,6 +862,150 @@ class Handler(BaseHTTPRequestHandler):
                 "message": "写入 config.json 失败: %s" % e, "stage": "persist"}}, 500)
         return self._json({"ok": True})
 
+    # ---- Redis 实例管理（仅管理员）----
+    def _redis_inst_from_payload(self, d):
+        """把表单里的 Redis 实例规整成内部结构；返回 (inst, 错误响应)。"""
+        def _int(name, default, lo, hi):
+            v = d.get(name)
+            if v in (None, ""):
+                return default, None
+            try:
+                iv = int(v)
+            except (TypeError, ValueError):
+                return None, "「%s」必须是整数" % name
+            if iv < lo or iv > hi:
+                return None, "「%s」超出范围（%d-%d）" % (name, lo, hi)
+            return iv, None
+
+        port, e1 = _int("port", 6379, 1, 65535)
+        if e1:
+            return None, e1
+        db, e2 = _int("db", 0, 0, 255)
+        if e2:
+            return None, e2
+        host = (d.get("host") or "").strip()
+        if not host:
+            return None, "主机地址不能为空"
+        label = (d.get("label") or "").strip() or host
+        return {
+            "key": (d.get("key") or "").strip(),
+            "label": label,
+            "host": host,
+            "port": port,
+            "db": db,
+            "username": (d.get("username") or "").strip(),
+            "password": d.get("password") or "",
+            "readonly": bool(d.get("readonly", True)),
+            "timeout": d.get("timeout") or 5,
+        }, None
+
+    def _redis_test(self, payload):
+        d = payload.get("inst") or {}
+        if (d.get("host") or "").strip():
+            inst, msg = self._redis_inst_from_payload(d)
+            if inst is None:
+                return self._json({"ok": False, "error": {
+                    "message": msg, "stage": "param"}}, 400)
+        else:
+            inst = get_redis(AppState.cfg, (d.get("key") or "").strip())
+            if inst is None:
+                return self._json({"ok": False, "error": {
+                    "message": "缺少主机地址", "stage": "param"}}, 400)
+        started = time.time()
+        try:
+            with redis_panel.redis_conn(inst) as c:
+                c.execute("PING")
+                raw = c.execute("INFO") or ""
+                kv = {}
+                for line in raw.splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and ":" in line:
+                        k, v = line.split(":", 1)
+                        kv[k.strip()] = v.strip()
+                try:
+                    dbsize = c.execute("DBSIZE")
+                except Exception:
+                    dbsize = None
+            return self._json({
+                "ok": True, "version": kv.get("redis_version", ""),
+                "role": kv.get("role", ""), "dbsize": dbsize,
+                "used_memory_human": kv.get("used_memory_human", ""),
+                "elapsed_ms": round((time.time() - started) * 1000, 1),
+            })
+        except Exception as e:
+            return self._json({"ok": False, "error": {
+                "message": "%s: %s" % (type(e).__name__, e), "stage": "connect"},
+                "elapsed_ms": round((time.time() - started) * 1000, 1)})
+
+    def _redis_save(self, payload):
+        d = payload.get("inst") or {}
+        entry, msg = self._redis_inst_from_payload(d)
+        if entry is None:
+            return self._json({"ok": False, "error": {
+                "message": msg, "stage": "param"}}, 400)
+        cfg = AppState.cfg
+        raw = cfg.get("redis") or []
+        if isinstance(raw, dict):
+            raw = [raw]
+        raw = [dict(x) for x in raw if isinstance(x, dict)]
+
+        key = entry["key"]
+        exists = None
+        for x in raw:
+            if key and (x.get("key") or "") == key:
+                exists = x
+                break
+        if exists is not None:
+            # 口令留空 = 沿用原口令（表单不回显口令）
+            if not entry.get("password"):
+                entry["password"] = exists.get("password") or ""
+            if not entry.get("username"):
+                entry["username"] = exists.get("username") or ""
+            exists.clear()
+            exists.update(entry)
+        else:
+            if not key:
+                key = "redis%d" % int(time.time() * 1000)
+                entry["key"] = key
+            if any((x.get("key") or "") == key for x in raw):
+                return self._json({"ok": False, "error": {
+                    "message": "Redis 标识重复: %s" % key, "stage": "param"}}, 400)
+            raw.append(entry)
+        cfg["redis"] = raw
+        cfg["_redis"] = normalize_redis(cfg)["_redis"]
+        try:
+            save_config(cfg)
+        except Exception as e:
+            return self._json({"ok": False, "error": {
+                "message": "写入 config.json 失败: %s" % e, "stage": "persist"}}, 500)
+        AppState.logmsg("保存 Redis 实例 key=%s host=%s:%s db=%s"
+                        % (key, entry.get("host"), entry.get("port"), entry.get("db")))
+        return self._json({"ok": True, "key": key})
+
+    def _redis_delete(self, payload):
+        key = (payload.get("key") or "").strip()
+        if not key:
+            return self._json({"ok": False, "error": {
+                "message": "缺少 key", "stage": "param"}}, 400)
+        cfg = AppState.cfg
+        raw = cfg.get("redis") or []
+        if isinstance(raw, dict):
+            raw = [raw]
+        before = len(raw)
+        raw = [x for x in raw if isinstance(x, dict) and (x.get("key") or "") != key]
+        if len(raw) == before:
+            return self._json({"ok": False, "error": {
+                "message": "Redis 实例不存在: %s" % key, "stage": "param"}}, 404)
+        cfg["redis"] = raw
+        cfg["_redis"] = normalize_redis(cfg)["_redis"]
+        try:
+            save_config(cfg)
+        except Exception as e:
+            return self._json({"ok": False, "error": {
+                "message": "写入 config.json 失败: %s" % e, "stage": "persist"}}, 500)
+        AppState.logmsg("删除 Redis 实例 key=%s" % key)
+        return self._json({"ok": True})
+
     # ---- GET ----
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -763,21 +1035,23 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/config":
                 cfg = AppState.cfg
+                user = self._cur_user()
+                my = visible_dbs(user)
+                default_db = cfg.get("default_db")
+                if not any(d.get("key") == default_db for d in my):
+                    default_db = my[0]["key"] if my else ""
                 return self._json({
                     "ok": True,
                     "version": APP_VERSION,
                     "title": cfg.get("title"),
                     "readonly": bool(cfg.get("readonly", True)),
                     "max_rows": cfg.get("max_rows", 1000),
-                    "default_db": cfg.get("default_db"),
-                    "user": AppState.auth.user,
-                    "databases": [public_ds(d) for d in (cfg.get("databases") or [])],
-                    "redis": [
-                        {"key": i["key"], "label": i.get("label"), "host": i.get("host"),
-                         "port": i.get("port"), "db": i.get("db"),
-                         "readonly": i.get("readonly", True)}
-                        for i in (cfg.get("_redis") or [])  # 见下方 normalize
-                    ],
+                    "default_db": default_db,
+                    "user": user,
+                    "role": (AppState.auth.get(user) or {}).get("role") or "user",
+                    "can_manage": AppState.auth.is_admin(user),
+                    "databases": [public_ds(d) for d in my],
+                    "redis": [public_redis(i) for i in visible_redis(user)],
                 })
 
             if path == "/api/drivers":
@@ -785,13 +1059,21 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/api/ds":
                 return self._json({"ok": True, "data": [
-                    public_ds(d) for d in (AppState.cfg.get("databases") or [])]})
+                    public_ds(d) for d in visible_dbs(self._cur_user())]})
+
+            if path == "/api/users":
+                return self._get_users()
 
             if path.startswith("/api/redis/"):
                 return self._redis_get(path, qs)
 
             dbkey = (qs.get("db") or [None])[0]
+            if not dbkey:
+                mine = visible_dbs(self._cur_user())
+                dbkey = mine[0]["key"] if mine else None
             ds = get_db(AppState.cfg, dbkey)
+            if not ds_allowed(self._cur_user(), ds.get("key")):
+                return self._forbid_ds(ds.get("key"))
             drv = drivers.get_driver(ds.get("driver"))
 
             # ?database=<库名> 用同一套地址/口令临时改连到别的库（PostgreSQL / SQL Server
@@ -803,16 +1085,57 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/overview":
                 return self._json({"ok": True, "db": ds["key"], "data": self._overview(ds, drv)})
             if path == "/api/schemas":
-                return self._json({"ok": True, "db": ds["key"], "data": self._with_conn(ds, drv, lambda c: drv.schemas(c))})
+                data = self._with_conn(ds, drv, lambda c: drv.schemas(c))
+                return self._json({"ok": True, "db": ds["key"], "data": filter_schemas(ds, data)})
             if path == "/api/tables":
                 schema = (qs.get("schema") or ["public"])[0]
+                if not schema_in_scope(ds, schema):
+                    return self._err("模式「%s」不在该数据源开放范围内" % schema, 403, "perm")
                 return self._json({"ok": True, "db": ds["key"],
                                    "data": self._with_conn(ds, drv, lambda c: drv.tables(c, schema))})
             if path == "/api/columns":
                 schema = (qs.get("schema") or ["public"])[0]
+                if not schema_in_scope(ds, schema):
+                    return self._err("模式「%s」不在该数据源开放范围内" % schema, 403, "perm")
                 table = (qs.get("table") or [""])[0]
                 return self._json({"ok": True, "db": ds["key"],
                                    "data": self._with_conn(ds, drv, lambda c: drv.columns(c, schema, table))})
+            if path == "/api/search_tables":
+                # 跨模式搜表：只在「可见模式」白名单内扫，超时/超量就返回已找到的部分
+                kw = (qs.get("q") or [""])[0].strip()
+                try:
+                    limit = int((qs.get("limit") or ["300"])[0] or 300)
+                except Exception:
+                    limit = 300
+                limit = max(1, min(limit, 1000))
+                if not kw:
+                    return self._json({"ok": True, "db": ds["key"], "data": [],
+                                       "scanned": 0, "truncated": False, "elapsed_ms": 0})
+                t0 = time.time()
+                low = kw.lower()
+
+                def _scan(c):
+                    hits, scanned, truncated = [], 0, False
+                    for s in filter_schemas(ds, drv.schemas(c)):
+                        if time.time() - t0 > 8.0:
+                            truncated = True
+                            break
+                        scanned += 1
+                        try:
+                            tabs = drv.tables(c, s) or []
+                        except Exception:
+                            continue
+                        for t in tabs:
+                            if low in str(t).lower():
+                                hits.append({"schema": s, "table": t})
+                                if len(hits) >= limit:
+                                    return hits, scanned, True
+                    return hits, scanned, truncated
+
+                hits, scanned, truncated = self._with_conn(ds, drv, _scan)
+                return self._json({"ok": True, "db": ds["key"], "data": hits,
+                                   "scanned": scanned, "truncated": truncated,
+                                   "elapsed_ms": round((time.time() - t0) * 1000, 1)})
         except Exception as e:
             return self._err("%s: %s" % (type(e).__name__, e), stage="meta")
 
@@ -836,6 +1159,7 @@ class Handler(BaseHTTPRequestHandler):
             out = drv.overview(conn)
             out["driver"] = ds.get("driver")
             out["db"] = ds.get("key")
+            out["schemas"] = filter_schemas(ds, out.get("schemas") or [])
             out["default_schema"] = (out.get("schemas") or [""])[0]
             return out
         finally:
@@ -845,10 +1169,12 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def _redis_get(self, path, qs):
-        insts = (AppState.cfg or {}).get("_redis") or []
+        me = self._cur_user()
+        insts = visible_redis(me)
         if not insts:
             return self._json({"ok": False, "error": {
-                "message": "config.json 里还没有配置 Redis（redis 段为空）", "stage": "config"}}, 400)
+                "message": "还没有可用的 Redis 实例（管理员可在 Redis 面板里添加）",
+                "stage": "config"}}, 400)
         key = (qs.get("redis") or [None])[0]
         inst = None
         for i in insts:
@@ -856,6 +1182,10 @@ class Handler(BaseHTTPRequestHandler):
                 inst = i
                 break
         if inst is None:
+            if key:
+                return self._json({"ok": False, "error": {
+                    "message": "当前账号没有访问 Redis 实例「%s」的权限" % key,
+                    "stage": "perm"}}, 403)
             inst = insts[0]
         try:
             if path == "/api/redis/overview":
@@ -912,15 +1242,38 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             if path == "/api/ds/test":
+                if not AppState.auth.is_admin(self._cur_user()):
+                    return self._json({"ok": False, "error": {
+                        "message": "只有管理员可以测试连接", "stage": "perm"}}, 403)
                 return self._ds_test(payload)
-            if path == "/api/ds/save":
-                return self._ds_save(payload)
-            if path == "/api/ds/delete":
-                return self._ds_delete(payload)
-            if path == "/api/ds/default":
-                return self._ds_default(payload)
+            if path in ("/api/ds/save", "/api/ds/delete", "/api/ds/default"):
+                if not AppState.auth.is_admin(self._cur_user()):
+                    return self._json({"ok": False, "error": {
+                        "message": "只有管理员可以修改数据源", "stage": "perm"}}, 403)
+                # 多人并发改配置时串行化，避免两个请求同时 append 丢一条
+                with AppState.cfg_lock:
+                    if path == "/api/ds/save":
+                        return self._ds_save(payload)
+                    if path == "/api/ds/delete":
+                        return self._ds_delete(payload)
+                    return self._ds_default(payload)
+            if path == "/api/redis/test":
+                if not AppState.auth.is_admin(self._cur_user()):
+                    return self._json({"ok": False, "error": {
+                        "message": "只有管理员可以测试 Redis 连接", "stage": "perm"}}, 403)
+                return self._redis_test(payload)
+            if path in ("/api/redis/save", "/api/redis/delete"):
+                if not AppState.auth.is_admin(self._cur_user()):
+                    return self._json({"ok": False, "error": {
+                        "message": "只有管理员可以修改 Redis 实例", "stage": "perm"}}, 403)
+                with AppState.cfg_lock:
+                    if path == "/api/redis/save":
+                        return self._redis_save(payload)
+                    return self._redis_delete(payload)
             if path == "/api/password":
                 return self._post_password(payload)
+            if path == "/api/users":
+                return self._post_users(payload)
             if path == "/api/query":
                 return self._post_query(payload)
             if path == "/api/redis/cmd":
@@ -933,17 +1286,95 @@ class Handler(BaseHTTPRequestHandler):
     def _post_password(self, payload):
         old = payload.get("old") or ""
         new = payload.get("new") or ""
+        user = self._cur_user()
         try:
-            AppState.auth.change_password(old, new)
+            AppState.auth.change_password(user, old, new)
         except ValueError as e:
             return self._json({"ok": False, "error": {"message": str(e), "stage": "password"}}, 400)
         except Exception as e:
             return self._json({"ok": False, "error": {"message": "%s: %s" % (type(e).__name__, e),
                                                       "stage": "password"}}, 500)
-        # 改密后让所有会话失效，强制重新登录
-        n = AppState.sessions.destroy_all()
-        AppState.logmsg("管理员口令已修改，已注销 %d 个会话" % n)
+        # 只注销该账号自己的会话：别人正在跑的查询不受影响
+        n = AppState.sessions.destroy_user(user)
+        AppState.logmsg("口令已修改 user=%s，注销该账号 %d 个会话" % (user, n))
         return self._json({"ok": True, "message": "口令已修改，请重新登录"})
+
+    # ---- 账号管理（仅管理员）----
+    def _get_users(self):
+        me = self._cur_user()
+        if not AppState.auth.is_admin(me):
+            return self._json({"ok": False, "error": {
+                "message": "只有管理员可以管理账号", "stage": "perm"}}, 403)
+        return self._json({
+            "ok": True,
+            "me": me,
+            "data": AppState.auth.users(),
+            "databases": [public_ds(d) for d in (AppState.cfg.get("databases") or [])],
+            "redis": [public_redis(i) for i in (AppState.cfg.get("_redis") or [])],
+            "online": AppState.sessions.count(),
+        })
+
+    def _post_users(self, payload):
+        me = self._cur_user()
+        if not AppState.auth.is_admin(me):
+            return self._json({"ok": False, "error": {
+                "message": "只有管理员可以管理账号", "stage": "perm"}}, 403)
+
+        act = (payload.get("action") or "save").strip()
+        name = (payload.get("user") or "").strip()
+        pwd = payload.get("password") or ""
+        role = (payload.get("role") or "user").strip()
+        if role not in ("admin", "user"):
+            role = "user"
+
+        try:
+            if act == "delete":
+                if name == me:
+                    return self._json({"ok": False, "error": {
+                        "message": "不能删除当前登录的管理员自己", "stage": "param"}}, 400)
+                AppState.auth.remove_user(name)
+                n = AppState.sessions.destroy_user(name)
+                AppState.logmsg("账号已删除 user=%s，注销会话 %d 个" % (name, n))
+                return self._json({"ok": True, "message": "账号已删除：%s" % name})
+
+            if not name:
+                return self._json({"ok": False, "error": {
+                    "message": "用户名不能为空", "stage": "param"}}, 400)
+
+            allow = ([str(x) for x in (payload.get("allow_dbs") or [])]
+                     if "allow_dbs" in payload else AuthStore.KEEP)
+            allow_r = ([str(x) for x in (payload.get("allow_redis") or [])]
+                       if "allow_redis" in payload else AuthStore.KEEP)
+
+            if AppState.auth.get(name):
+                if act == "reset":
+                    if not pwd:
+                        return self._json({"ok": False, "error": {
+                            "message": "重设口令不能为空", "stage": "param"}}, 400)
+                    AppState.auth.set_password(name, pwd)
+                    msg = "口令已重设：%s" % name
+                else:
+                    AppState.auth.update_user(name, role=role, allow_dbs=allow,
+                                              allow_redis=allow_r, password=(pwd or None))
+                    msg = "账号已更新：%s" % name
+            else:
+                if not pwd:
+                    return self._json({"ok": False, "error": {
+                        "message": "新建账号必须设置口令（≥8 位）", "stage": "param"}}, 400)
+                AppState.auth.add_user(name, pwd, role,
+                                       None if allow is AuthStore.KEEP else allow,
+                                       None if allow_r is AuthStore.KEEP else allow_r)
+                msg = "账号已新建：%s" % name
+
+            # 角色/授权/口令任一变化，旧的会话一律作废，避免越权继续跑
+            n = AppState.sessions.destroy_user(name)
+            AppState.logmsg("%s，注销该账号会话 %d 个" % (msg, n))
+            return self._json({"ok": True, "message": msg})
+        except ValueError as e:
+            return self._json({"ok": False, "error": {"message": str(e), "stage": "users"}}, 400)
+        except Exception as e:
+            return self._json({"ok": False, "error": {
+                "message": "%s: %s" % (type(e).__name__, e), "stage": "users"}}, 500)
 
     def _post_query(self, payload):
         sql = (payload.get("sql") or "").strip()
@@ -956,26 +1387,37 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             max_rows = 1000
         ds = get_db(AppState.cfg, payload.get("db"))
+        if not ds_allowed(self._cur_user(), ds.get("key")):
+            return self._forbid_ds(ds.get("key"))
         # 跨库查询：前端在对象树里选了别的库时，用同一套地址/口令临时换 dbname 重连
         dbname = payload.get("database")
         if dbname:
             ds = dict(ds, dbname=dbname)
         schema = payload.get("schema") or None
+        if schema and not schema_in_scope(ds, schema):
+            return self._err("模式「%s」不在该数据源开放范围内" % schema, 403, "perm")
         result = run_query(AppState.cfg, ds, sql, max_rows, schema=schema)
         result["db"] = ds.get("key")
         return self._json(result)
 
     def _post_redis(self, payload):
-        insts = (AppState.cfg or {}).get("_redis") or []
+        me = self._cur_user()
+        insts = visible_redis(me)
         if not insts:
             return self._json({"ok": False, "error": {
-                "message": "config.json 里还没有配置 Redis", "stage": "config"}}, 400)
+                "message": "还没有可用的 Redis 实例", "stage": "config"}}, 400)
         key = payload.get("redis")
-        inst = insts[0]
+        inst = None
         for i in insts:
             if key and i.get("key") == key:
                 inst = i
                 break
+        if inst is None:
+            if key:
+                return self._json({"ok": False, "error": {
+                    "message": "当前账号没有访问 Redis 实例「%s」的权限" % key,
+                    "stage": "perm"}}, 403)
+            inst = insts[0]
         raw = (payload.get("cmd") or "").strip()
         if not raw:
             return self._json({"ok": False, "error": {
@@ -1010,8 +1452,10 @@ def normalize_redis(cfg):
             "host": x.get("host") or "127.0.0.1",
             "port": int(x.get("port") or 6379),
             "password": x.get("password") or "",
+            "username": x.get("username") or "",
             "db": int(x.get("db") or 0),
             "readonly": bool(x.get("readonly", True)),
+            "timeout": float(x.get("timeout") or 5),
         }
         out.append(inst)
     cfg["_redis"] = out
