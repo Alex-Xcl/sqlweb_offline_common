@@ -60,10 +60,12 @@ cd sqlweb_offline_common_common-1.3.0
 ./install.sh --check      # 只检查环境，不改任何文件（查驱动、查 Python、给建议）
 ./install.sh --foreground # 前台启动，Ctrl+C 退出（调试用）
 ./install.sh --no-start   # 只准备（生成配置），不启动
-./install.sh --port 8080  # 换端口（写进 config.json 种子 / 已在跑则写状态库）
+./install.sh --port 8080  # 换端口（已有 sqlweb.db 就写状态库，否则写 config.json 种子）
+./install.sh --base-path /sqlweb   # nginx 子路径前缀（写 "/" 表示根路径）
 ./install.sh --host 127.0.0.1   # 只监听本机
 
 ./stop.sh                 # 停止后台服务
+python3 setconfig.py      # 看当前生效配置（端口 / 子路径 / 只读 / 数据源数）
 tail -f sqlweb.log        # 看日志（每次启动会保留上一轮为 sqlweb.log.prev）
 ```
 
@@ -511,6 +513,18 @@ Redis 有两个入口，**改的是同一份状态库 `sqlweb.db` 的 `redis` �
 
 迁移只做一次：之后一律以 `sqlweb.db` 为准，再改旧 JSON 不会生效。
 
+**改端口 / 子路径（base_path）**：两条路，都不用记 SQL。
+
+```bash
+python3 setconfig.py                      # 看当前生效值（会标出来源是状态库还是 JSON 种子）
+python3 setconfig.py --set base_path=/sqlweb --set port=8080
+python3 setconfig.py --get base_path      # 脚本里取值
+./install.sh --port 8080 --base-path /sqlweb   # 等价写法，装完顺手重启
+./stop.sh && ./install.sh                # 改完要重启才生效
+```
+
+> **不要再手改 `config.json`**：迁移完成后它已经不被读取（启动日志会打印「访问前缀: /sqlweb」，并对目录里新出现的 `config.json` 提示「该文件不再参与读写」）。这是升级后最容易踩的坑——按老习惯改了 `config.json` 重启，发现子路径 / 端口没变。
+
 **回滚**：想退回旧版（JSON 版）时，把 `*.migrated-*` 改回 `config.json` / `auth.json`，并删掉 `sqlweb.db` 即可——迁移过程没有改动这两个文件的内容。
 
 
@@ -539,7 +553,14 @@ location /sqlweb/ {
 }
 ```
 
-同时把 `base_path` 设成 `/sqlweb`（状态库 `kv` 表里的这个键；旧版是改 `config.json`）。
+同时把 `base_path` 设成 `/sqlweb`：
+
+```bash
+python3 setconfig.py --set base_path=/sqlweb
+./stop.sh && ./install.sh
+```
+
+起来后看启动日志里的 `访问前缀: /sqlweb`——这一行是判断代理配置有没有生效最快的方法；显示「（根路径，无前缀）」就是没读到。
 
 服务侧会：剥离前缀、把 `window.__BASE__` 注入前端、Cookie 的 `Path` 自动带上前缀。**不设 `base_path` 时一切按根路径工作**，两种部署方式都不用改代码。
 
@@ -583,6 +604,7 @@ sqlweb_offline_common_common-1.3.0/
 ├── sqlweb.py              主程序：HTTP 路由、认证中间件、数据源 API、查询执行
 ├── drivers.py             多数据库适配层（6 个 Driver 类）
 ├── store.py               状态存储层（SQLite：数据源 / Redis 实例 / 账号都在 sqlweb.db 里）
+├── setconfig.py           离线改配置（--set base_path=/sqlweb、--set port=8080、--get/--show）
 ├── auth.py                AuthStore / SessionManager / RateLimiter / CaptchaStore（多账号 v2）
 ├── captcha.py             纯标准库 PNG 验证码
 ├── redis_panel.py         Redis 面板（移植自 v2.3）
@@ -635,6 +657,8 @@ sqlweb_offline_common_common-1.3.0/
 | 登录 429 | 同一 IP 1 分钟内失败 5 次被限速，等 60 秒 |
 | 忘记管理员口令 | 停服后删掉 `sqlweb.db` 的 `users` 行（或整库），重启回到初始化模式并打印新令牌 |
 | 手改了 SQL / 状态库但界面没变 | 界面与接口一律以 `sqlweb.db` 为准；用 `sqlite3` 直接改库要重启服务才生效。界面里改则不用 |
+| nginx 反代 `/sqlweb/` 打不开（404 / 白屏 / 资源全丢） | 先看启动日志有没有 `访问前缀: /sqlweb`；没有就是 `base_path` 没读到——用 `python3 setconfig.py --set base_path=/sqlweb` 写状态库再重启，不要再改 `config.json`。另确认 `proxy_pass` 结尾带 `/`（`http://127.0.0.1:8899/`） |
+| 改了 `config.json` 但端口 / 子路径没变 | 1.3.0 起配置真源是 `sqlweb.db`，`config.json` 只在首次启动导入一次。用 `python3 setconfig.py --set ...` 或界面改；启动日志会对残留的 `config.json` 打出提示 |
 | 达梦在 mac 上报 `ModuleNotFoundError: dmPython` | 装纯 Python 驱动：`pip install dm-pure`，服务会自动降级（3.7 上走 vendor 里的 `dmpy`） |
 | Windows 下中文乱码 | 用 `chcp 65001` 或在 PowerShell 里跑；`start.bat` 已内置 |
 | 端口被占、启动后立刻退出 | `./install.sh` 会打印日志尾部；先 `./stop.sh`，或换端口 `./install.sh --port 8898` |

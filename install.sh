@@ -6,8 +6,9 @@
 #   --foreground      前台启动（Ctrl+C 退出）
 #   --no-start        只做环境准备，不启动服务
 #   --check           只检查环境（不安装、不启动、不改配置）
-#   --port N          设置监听端口（写入 config.json）
-#   --host H          设置监听地址（默认沿用 config.json，示例为 0.0.0.0）
+#   --port N          设置监听端口（写入状态库 sqlweb.db；还没有库时写 config.json 种子）
+#   --host H          设置监听地址（同上，默认沿用现值）
+#   --base-path P     设置 nginx 子路径前缀，如 /sqlweb（写 / 表示根路径），写入状态库
 #   --install-deps    兼容旧参数：就绪驱动（不带参数时也默认执行这一步）
 #   -h, --help        显示本帮助
 #
@@ -19,7 +20,7 @@ set -u
 DIR=$(cd "$(dirname "$0")" && pwd)
 cd "$DIR" || exit 1
 
-MODE="auto"; PORT=""; HOSTBIND=""
+MODE="auto"; PORT=""; HOSTBIND=""; BASEPATH=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -30,6 +31,7 @@ while [ $# -gt 0 ]; do
         --install-deps) shift ;;
         --port)         PORT="${2:-}"; shift 2 ;;
         --host)         HOSTBIND="${2:-}"; shift 2 ;;
+        --base-path)    BASEPATH="${2:-}"; shift 2 ;;
         -h|--help)      sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "未知参数: $1（用 --help 查看用法）"; exit 1 ;;
     esac
@@ -144,10 +146,13 @@ for d in drivers.list_drivers():
 # ---- 5. 配置 ----
 if [ "$MODE" = "check" ]; then
     echo
-    if [ -f config.json ]; then
-        echo "配置文件: 已有 config.json"
+    if [ -f sqlweb.db ]; then
+        echo "状态库:   已有 sqlweb.db（配置真源，config.json 不再读取）"
+        echo "           改端口 / base_path: ./install.sh --port 8080 --base-path /sqlweb"
+    elif [ -f config.json ]; then
+        echo "配置文件: 已有 config.json（首次启动会导入 sqlweb.db 并改名留档）"
     else
-        echo "配置文件: 尚无 config.json（首次部署会自动由 config.example.json 生成）"
+        echo "配置:     尚无（首次部署会自动生成 config.json 种子）"
     fi
     echo
     echo "环境检查完成（未安装、未启动、未改配置）"
@@ -155,33 +160,25 @@ if [ "$MODE" = "check" ]; then
 fi
 
 echo
-if [ ! -f config.json ]; then
+if [ -f sqlweb.db ]; then
+    echo "  [ok] 已存在状态库 sqlweb.db（配置真源就是它，不再生成 config.json）"
+elif [ ! -f config.json ]; then
     cp config.example.json config.json
-    echo "  [ok] 已由 config.example.json 生成 config.json"
-    echo "       数据源为空，登录后在界面「数据源」里新增（也可直接编辑该文件）"
+    echo "  [ok] 已由 config.example.json 生成 config.json（首次启动导入 sqlweb.db 后改名留档）"
+    echo "       数据源为空，登录后在界面「数据源」里新增"
 else
-    echo "  [ok] 已有 config.json，保持不变"
+    echo "  [ok] 已有 config.json，保持不变（首次启动导入 sqlweb.db 后改名留档）"
 fi
 chmod 600 config.json 2>/dev/null || true
 chmod 600 sqlweb.db 2>/dev/null || true
 
-if [ -n "$PORT" ] || [ -n "$HOSTBIND" ]; then
-    "$PY" - "$PORT" "$HOSTBIND" <<'PYEOF'
-import json, sys, os
-port, host = sys.argv[1], sys.argv[2]
-p = "config.json"
-with open(p, encoding="utf-8") as f:
-    cfg = json.load(f)
-if port:
-    cfg["port"] = int(port)
-if host:
-    cfg["host"] = host
-tmp = p + ".tmp"
-with open(tmp, "w", encoding="utf-8") as f:
-    json.dump(cfg, f, ensure_ascii=False, indent=2)
-os.replace(tmp, p)
-print("  [ok] 已更新监听地址为 %s:%s" % (cfg.get("host"), cfg.get("port")))
-PYEOF
+if [ -n "$PORT" ] || [ -n "$HOSTBIND" ] || [ -n "$BASEPATH" ]; then
+    SETARGS=""
+    [ -n "$PORT" ] && SETARGS="$SETARGS --set port=$PORT"
+    [ -n "$HOSTBIND" ] && SETARGS="$SETARGS --set host=$HOSTBIND"
+    [ -n "$BASEPATH" ] && SETARGS="$SETARGS --set base_path=$BASEPATH"
+    # shellcheck disable=SC2086
+    "$PY" setconfig.py $SETARGS || echo "  [FAIL] 配置写入失败，看上面的报错；也可手动改 sqlweb.db"
 fi
 
 if [ "$MODE" = "nostart" ]; then
@@ -191,8 +188,10 @@ if [ "$MODE" = "nostart" ]; then
 fi
 
 # ---- 6. 已在运行就不重复起 ----
-PORT_NOW=$("$PY" -c "import json;print(json.load(open('config.json')).get('port',8899))" 2>/dev/null || echo 8899)
-HOST_NOW=$("$PY" -c "import json;print(json.load(open('config.json')).get('host','0.0.0.0'))" 2>/dev/null || echo 0.0.0.0)
+PORT_NOW=$("$PY" setconfig.py --get port 2>/dev/null | tr -d '\r')
+HOST_NOW=$("$PY" setconfig.py --get host 2>/dev/null | tr -d '\r')
+[ -n "${PORT_NOW:-}" ] || PORT_NOW=8899
+[ -n "${HOST_NOW:-}" ] || HOST_NOW=0.0.0.0
 if [ -f .sqlweb.pid ]; then
     OLDPID=$(cat .sqlweb.pid 2>/dev/null || echo "")
     if [ -n "$OLDPID" ] && kill -0 "$OLDPID" 2>/dev/null; then
@@ -237,13 +236,16 @@ if [ -z "$PID" ] || ! kill -0 "$PID" 2>/dev/null; then
 fi
 
 IP=$(show_ip)
-PORT_NOW=$("$PY" -c "import json;print(json.load(open('config.json')).get('port',8899))" 2>/dev/null || echo 8899)
+PORT_NOW=$("$PY" setconfig.py --get port 2>/dev/null | tr -d '\r')
+[ -n "${PORT_NOW:-}" ] || PORT_NOW=8899
+BASE_NOW=$("$PY" setconfig.py --get base_path 2>/dev/null | tr -d '\r')
+URLBASE="http://$IP:$PORT_NOW${BASE_NOW:-}"
 
 echo "================================================"
 echo " 已启动（PID $PID）"
 echo "================================================"
-echo " 访问地址: http://$IP:$PORT_NOW/login"
-echo " 本机访问: http://127.0.0.1:$PORT_NOW/login"
+echo " 访问地址: $URLBASE/login"
+echo " 本机访问: http://127.0.0.1:$PORT_NOW${BASE_NOW:-}/login"
 echo " 日志:     $DIR/sqlweb.log"
 echo " 停止:     ./stop.sh      重启: ./stop.sh && ./install.sh"
 echo
@@ -255,5 +257,5 @@ if [ -n "${TOKEN:-}" ]; then
     echo " 初始化令牌: $TOKEN   （仅本次启动有效）"
     echo "================================================"
 else
-    sed -n '1,40p' sqlweb.log | grep -E "监听|数据源" || true
+    sed -n '1,40p' sqlweb.log | grep -E "监听|访问前缀|数据源" || true
 fi

@@ -6,7 +6,8 @@ param(
     [switch]$NoStart,
     [switch]$Check,
     [int]$Port = 0,
-    [string]$BindHost = ""
+    [string]$BindHost = "",
+    [string]$BasePath = "-"
 )
 
 $ErrorActionPreference = "Stop"
@@ -129,29 +130,21 @@ for d in drivers.list_drivers():
 
 # ---- 5. 配置 ----
 Write-Host ""
-if (-not (Test-Path "config.json")) {
+if (Test-Path "sqlweb.db") {
+    Write-Host "  [ok] 已存在状态库 sqlweb.db（配置真源就是它，不再生成 config.json）"
+} elseif (-not (Test-Path "config.json")) {
     Copy-Item config.example.json config.json
-    Write-Host "  [ok] 已由 config.example.json 生成 config.json"
+    Write-Host "  [ok] 已由 config.example.json 生成 config.json（首次启动导入 sqlweb.db 后改名留档）"
 } else {
-    Write-Host "  [ok] 已有 config.json，保持不变"
+    Write-Host "  [ok] 已有 config.json，保持不变（首次启动导入 sqlweb.db 后改名留档）"
 }
 
-if ($Port -gt 0 -or $BindHost -ne "") {
-    & $py -c @"
-import json, sys, os
-port, host = '$Port', '$BindHost'
-with open('config.json', encoding='utf-8') as f:
-    cfg = json.load(f)
-if port and int(port) > 0:
-    cfg['port'] = int(port)
-if host:
-    cfg['host'] = host
-tmp = 'config.json.tmp'
-with open(tmp, 'w', encoding='utf-8') as f:
-    json.dump(cfg, f, ensure_ascii=False, indent=2)
-os.replace(tmp, 'config.json')
-print('  [ok] 已更新监听为 %s:%s' % (cfg.get('host'), cfg.get('port')))
-"@
+$setArgs = @()
+if ($Port -gt 0) { $setArgs += @("--set", "port=$Port") }
+if ($BindHost -ne "") { $setArgs += @("--set", "host=$BindHost") }
+if ($BasePath -ne "-") { $setArgs += @("--set", "base_path=$BasePath") }
+if ($setArgs.Count -gt 0) {
+    & $py (Join-Path $Dir "setconfig.py") @setArgs
 }
 
 if ($Check) {

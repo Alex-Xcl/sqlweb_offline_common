@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """进程内端到端自测（不随包交付，仅开发验证用）"""
-import json, os, sqlite3, sys, tempfile, threading, time
+import json, os, sqlite3, subprocess, sys, tempfile, threading, time
+
+
+def _sp_run(args):
+    """跑子进程并吞掉输出，只回退出码。"""
+    r = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    return r.returncode
 import urllib.request, urllib.error
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -314,6 +320,18 @@ check("状态库回读数据源与 Redis 实例",
 check("状态库回读账号", [u["user"] for u in _st.load_auth()["users"]] == ["admin"], "")
 _mig2 = _st.migrate_from_json(_ocfg, _oauth)
 check("重复迁移不会重复导入", _mig2.get("config") == 0 and _mig2.get("auth") == 0, str(_mig2))
+# setconfig.py：离线改配置必须真的落库（install.sh --port / --base-path 走的就是它）
+_ret = _sp_run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "setconfig.py"),
+                "--db", _sdb, "--set", "base_path=/sqlweb", "--set", "port=18099"])
+check("setconfig.py 能写状态库（退出码 0）", _ret == 0, "rc=%s" % _ret)
+_sc = _store.SqliteStore(_sdb).load_config()
+check("setconfig.py 写入 base_path / port 正确",
+      (_sc.get("base_path") == "/sqlweb") and (int(_sc.get("port") or 0) == 18099), str(_sc)[:120])
+_ret2 = _sp_run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "setconfig.py"),
+                 "--db", _sdb, "--set", "base_path=/"])
+_sc2 = _store.SqliteStore(_sdb).load_config()
+check("setconfig.py 把 base_path=/ 规范成空（根路径）", _ret2 == 0 and _sc2.get("base_path") == "", repr(_sc2.get("base_path")))
+
 check("状态库权限 600（POSIX 生效，Windows 跳过）",
       os.name == "nt" or oct(os.stat(_sdb).st_mode)[-3:] == "600", oct(os.stat(_sdb).st_mode))
 

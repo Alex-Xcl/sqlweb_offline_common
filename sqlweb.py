@@ -1514,6 +1514,8 @@ def main():
     ap = argparse.ArgumentParser(description="sqlweb_offline_common")
     ap.add_argument("--host", default=None)
     ap.add_argument("--port", type=int, default=None)
+    ap.add_argument("--base-path", dest="base_path", default=None,
+                    help="nginx 子路径前缀（如 /sqlweb）；给了就写回状态库")
     ap.add_argument("--config", default=None)
     ap.add_argument("--log", default=None)
     args = ap.parse_args()
@@ -1531,11 +1533,24 @@ def main():
               % (mig.get("config", 0), mig.get("redis", 0), mig.get("auth", 0)), flush=True)
         for a in mig.get("archived") or []:
             print("  旧文件已留档: %s" % a, flush=True)
+    elif os.path.exists(legacy_cfg):
+        # 库已有状态、但目录里又出现 config.json：多为迁移后按老习惯手改它，必须说清楚
+        print("提示: 检测到 %s，但配置真源是 %s（SQLite），该文件不再参与读写"
+              % (os.path.basename(legacy_cfg), STORE.path), flush=True)
+        print("      改端口 / base_path / 数据源：界面里改，或 python3 setconfig.py --set base_path=/sqlweb",
+              flush=True)
     cfg = normalize_redis(load_config())
     if args.host:
         cfg["host"] = args.host
     if args.port:
         cfg["port"] = args.port
+    if args.base_path is not None:
+        bp = (args.base_path or "").strip()
+        bp = "" if bp in ("", "/") else ("/" + bp.lstrip("/")).rstrip("/")
+        if bp != (cfg.get("base_path") or ""):
+            cfg["base_path"] = bp
+            save_config(cfg)          # 写回状态库，重启后仍生效
+            print("已把 base_path 写回状态库：%r" % bp, flush=True)
     AppState.cfg = cfg
 
     if args.log:
@@ -1564,6 +1579,7 @@ def main():
     print("根目录: %s" % HERE, flush=True)
     print("状态库: %s（SQLite 单文件）" % STORE.path, flush=True)
     print("监听: %s:%s" % (cfg.get("host"), cfg.get("port")), flush=True)
+    print("访问前缀: %s" % (cfg.get("base_path") or "（根路径，无前缀）"), flush=True)
     for d in drivers.list_drivers():
         print("  驱动 %-12s %-16s %s" % (d["name"], d["label"],
                                        "可用" if d["available"] else "缺失"),
