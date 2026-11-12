@@ -10,6 +10,9 @@
     5. 登录失败按「IP+账号」限速，防暴力破解，同时不互相牵连
     6. 首次初始化需要一个控制台打印的一次性令牌，防止被别人抢先设密码
 
+存储位置：默认在 sqlweb.db 的 users 表（单文件 SQLite）；显式给 path 且不给 store 时
+仍用 auth.json（单元自测与一次性迁移走这条老路）。两种结构完全一致：
+
 auth.json 结构（v2，多用户）：
     {
       "version": 2,
@@ -88,19 +91,24 @@ class AuthStore(object):
     # 供调用方区分"不修改授权"与"清空授权"：update_user(allow_dbs=AuthStore.KEEP)
     KEEP = _KEEP
 
-    def __init__(self, path):
+    def __init__(self, path=None, store=None):
+        """store 给定时账号存在 SQLite 状态库里；否则沿用老的 auth.json 文件。"""
         self.path = path
+        self.store = store
         self._lock = threading.Lock()
         self._data = {"version": 2, "users": []}
         self._load()
 
     # ---------------------------------------------------------------- 加载
     def _load(self):
-        try:
-            with open(self.path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-        except Exception:
-            raw = None
+        if self.store is not None:
+            raw = self.store.load_auth()
+        else:
+            try:
+                with open(self.path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+            except Exception:
+                raw = None
         if not isinstance(raw, dict):
             self._data = {"version": 2, "users": []}
             return
@@ -146,6 +154,10 @@ class AuthStore(object):
         self._data = {"version": 2, "users": []}
 
     def _save(self):
+        if self.store is not None:
+            # 一个事务写完，进程被杀也只会是"上次的完整状态"，不会有半个账号表
+            self.store.save_auth(self._data)
+            return
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self._data, f, ensure_ascii=False, indent=2)

@@ -44,6 +44,7 @@ if os.path.isdir(VENDOR) and VENDOR not in sys.path:
 import drivers
 import captcha
 import redis_panel
+import store as state_store
 from auth import (AuthStore, SessionManager, RateLimiter, CaptchaStore,
                   parse_cookie, SESSION_TTL)
 
@@ -53,6 +54,9 @@ CONFIG_PATH = os.path.join(HERE, "config.json")
 INDEX_PATH = os.path.join(HERE, "index.html")
 LOGIN_PATH = os.path.join(HERE, "login.html")
 AUTH_PATH = os.path.join(HERE, "auth.json")
+# 运行状态统一落在单文件 SQLite：数据源 / Redis 实例 / 账号都在 sqlweb.db 里
+DB_PATH = os.path.join(HERE, "sqlweb.db")
+STORE = None      # main() 里装配；为 None 时退回老的 JSON 模式（自测与兼容用）
 
 DEFAULTS = {
     "title": "SQLWeb 离线控制台",
@@ -74,14 +78,26 @@ READONLY_HEADS = ("select", "with", "values", "explain", "show", "table", "decla
 
 # ---------------------------------------------------------------- 配置
 def load_config(path=None):
-    path = path or CONFIG_PATH
+    """读配置。
+
+    默认读 sqlweb.db（SQLite）；显式给一个 .json 路径时按老的 JSON 文件读，
+    单元自测和一次性迁移仍走这条老路。
+    """
+    engine = "json"
     cfg = dict(DEFAULTS)
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-        if isinstance(raw, dict):
-            cfg.update(raw)
+    if path is None and STORE is not None:
+        path = STORE.path
+        cfg.update(STORE.load_config())
+        engine = "sqlite"
+    else:
+        path = path or CONFIG_PATH
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if isinstance(raw, dict):
+                cfg.update(raw)
     cfg["_path"] = path
+    cfg["_engine"] = engine
     # 数据源补齐默认字段
     dbs = []
     for i, d in enumerate(cfg.get("databases") or []):
@@ -105,8 +121,11 @@ def load_config(path=None):
 
 
 def save_config(cfg, path=None):
-    """把配置写回磁盘。只落白名单字段，不把运行时键写进去。"""
-    path = path or cfg.get("_path") or CONFIG_PATH
+    """把配置落盘。只落白名单字段，不把运行时键写进去。
+
+    sqlite 模式：整份配置一个事务写进 sqlweb.db；
+    json  模式：沿用临时文件 + os.replace，保证不会读到半个文件。
+    """
     out = {}
     for k, v in cfg.items():
         if k.startswith("_"):
@@ -116,6 +135,9 @@ def save_config(cfg, path=None):
         {kk: vv for kk, vv in d.items() if not kk.startswith("_")}
         for d in (cfg.get("databases") or [])
     ]
+    if path is None and STORE is not None and cfg.get("_engine") == "sqlite":
+        return STORE.save_config(out)
+    path = path or cfg.get("_path") or CONFIG_PATH
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
@@ -1496,7 +1518,20 @@ def main():
     ap.add_argument("--log", default=None)
     args = ap.parse_args()
 
-    cfg = normalize_redis(load_config(args.config))
+    # 状态库：sqlweb.db（单文件 SQLite）。首次启动会把老的 config.json / auth.json
+    # 自动导进来并把旧文件改名留档，之后一律以库为准。
+    global STORE
+    dbpath = str(args.config) if (args.config and str(args.config).lower().endswith(".db")) else DB_PATH
+    STORE = state_store.SqliteStore(dbpath)
+    legacy_cfg = (str(args.config)
+                  if (args.config and str(args.config).lower().endswith(".json")) else CONFIG_PATH)
+    mig = STORE.migrate_from_json(legacy_cfg, AUTH_PATH)
+    if mig.get("config") or mig.get("auth"):
+        print("已把旧配置迁入 SQLite：数据源 %d 个、Redis 实例 %d 个、账号 %d 个"
+              % (mig.get("config", 0), mig.get("redis", 0), mig.get("auth", 0)), flush=True)
+        for a in mig.get("archived") or []:
+            print("  旧文件已留档: %s" % a, flush=True)
+    cfg = normalize_redis(load_config())
     if args.host:
         cfg["host"] = args.host
     if args.port:
@@ -1509,7 +1544,7 @@ def main():
         except Exception as e:
             print("日志文件打不开: %s" % e, flush=True)
 
-    AppState.auth = AuthStore(AUTH_PATH)
+    AppState.auth = AuthStore(AUTH_PATH, store=STORE)
     AppState.sessions = SessionManager()
     AppState.limiter = RateLimiter()
     AppState.captchas = CaptchaStore()
@@ -1527,7 +1562,7 @@ def main():
 
     print("sqlweb_offline_common %s" % APP_VERSION, flush=True)
     print("根目录: %s" % HERE, flush=True)
-    print("配置文件: %s" % (args.config or CONFIG_PATH), flush=True)
+    print("状态库: %s（SQLite 单文件）" % STORE.path, flush=True)
     print("监听: %s:%s" % (cfg.get("host"), cfg.get("port")), flush=True)
     for d in drivers.list_drivers():
         print("  驱动 %-12s %-16s %s" % (d["name"], d["label"],

@@ -73,7 +73,7 @@ if [ "$PYMIN" -eq 7 ]; then
 fi
 
 # ---- 2. 文件完整性 ----
-for f in sqlweb.py drivers.py auth.py captcha.py redis_panel.py index.html login.html; do
+for f in sqlweb.py store.py drivers.py auth.py captcha.py redis_panel.py index.html login.html; do
     if [ ! -f "$f" ]; then echo "  [FAIL] 缺少文件 $f"; exit 1; fi
 done
 echo "  [ok] 程序文件齐全"
@@ -163,6 +163,7 @@ else
     echo "  [ok] 已有 config.json，保持不变"
 fi
 chmod 600 config.json 2>/dev/null || true
+chmod 600 sqlweb.db 2>/dev/null || true
 
 if [ -n "$PORT" ] || [ -n "$HOSTBIND" ]; then
     "$PY" - "$PORT" "$HOSTBIND" <<'PYEOF'

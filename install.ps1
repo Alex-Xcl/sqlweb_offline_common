@@ -82,7 +82,7 @@ if ($ok -ne "1") {
 Write-Host "  [ok] Python 版本满足要求 (>=3.7)"
 
 # ---- 2. 文件完整性 ----
-foreach ($f in @("sqlweb.py","drivers.py","auth.py","captcha.py","redis_panel.py","index.html","login.html")) {
+foreach ($f in @("sqlweb.py","store.py","drivers.py","auth.py","captcha.py","redis_panel.py","index.html","login.html")) {
     if (-not (Test-Path $f)) { Write-Host "  [FAIL] 缺少文件 $f"; exit 1 }
 }
 Write-Host "  [ok] 程序文件齐全"

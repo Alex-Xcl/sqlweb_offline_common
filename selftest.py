@@ -283,6 +283,40 @@ img = _b64.b64decode(str(b.get("image", "").split(",", 1)[1]))
 check("PNG 头正确", img[:8] == b"\x89PNG\r\n\x1a\n", repr(img[:8]))
 check("图片体积极小(<3KB)", len(img) < 3000, "%d bytes" % len(img))
 
+print("=== 10. 状态库（SQLite 单文件）===")
+import store as _store
+_sdb = os.path.join(TMPD, "sw_selftest_store.db")
+for _p in (_sdb, _sdb + "-journal"):
+    if os.path.exists(_p):
+        os.remove(_p)
+_st = _store.SqliteStore(_sdb)
+_tb = [r[0] for r in sqlite3.connect(_sdb).execute("SELECT name FROM sqlite_master WHERE type='table'")]
+check("SQLite 表结构齐全", {"kv", "datasources", "redis", "users", "meta"} <= set(_tb), str(_tb))
+_ocfg = os.path.join(TMPD, "sw_selftest_legacy_cfg.json")
+_oauth = os.path.join(TMPD, "sw_selftest_legacy_auth.json")
+with open(_ocfg, "w", encoding="utf-8") as f:
+    json.dump({"title": "迁移用", "port": 8899,
+               "databases": [{"key": "x", "label": "X", "driver": "sqlite", "path": "/x.db"}],
+               "redis": [{"key": "r", "label": "R", "host": "127.0.0.1", "port": 6379, "db": 0}]},
+              f, ensure_ascii=False)
+with open(_oauth, "w", encoding="utf-8") as f:
+    json.dump({"version": 2, "users": [{"user": "admin", "salt": "s", "hash": "h", "role": "admin"}]},
+              f, ensure_ascii=False)
+_mig = _st.migrate_from_json(_ocfg, _oauth)
+check("旧 config.json 迁入数据源", _mig.get("config") == 1, str(_mig)[:160])
+check("旧 auth.json 迁入账号", _mig.get("auth") == 1, str(_mig)[:160])
+check("迁移后旧文件改名留档（不删数据）",
+      not os.path.exists(_ocfg) and len(_mig.get("archived") or []) == 2, str(_mig.get("archived")))
+_back = _st.load_config()
+check("状态库回读数据源与 Redis 实例",
+      (_back.get("databases") or [{}])[0].get("key") == "x" and
+      (_back.get("redis") or [{}])[0].get("key") == "r", str(_back)[:180])
+check("状态库回读账号", [u["user"] for u in _st.load_auth()["users"]] == ["admin"], "")
+_mig2 = _st.migrate_from_json(_ocfg, _oauth)
+check("重复迁移不会重复导入", _mig2.get("config") == 0 and _mig2.get("auth") == 0, str(_mig2))
+check("状态库权限 600（POSIX 生效，Windows 跳过）",
+      os.name == "nt" or oct(os.stat(_sdb).st_mode)[-3:] == "600", oct(os.stat(_sdb).st_mode))
+
 print()
 print("=" * 52)
 print("通过 %d 项，失败 %d 项" % (PASS_N[0], FAIL_N[0]))

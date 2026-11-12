@@ -30,9 +30,9 @@
 - **界面配数据源**：增 / 改 / 删 / 设默认，先测连再保存，保存即热加载，不重启
 - **只读保护**：默认拦截 INSERT / UPDATE / DELETE / DDL，可按数据源单独放开
 - **多库浏览**：PostgreSQL / SQL Server 这类一个实例挂多库的，对象树先列库再列 schema，点库名即换 `dbname` 重连取数（不写回配置）
-- **多账号并发**：一个 `auth.json` 存多个账号，管理员可逐个分配"能看哪几个数据源"；多人不同账号同时用，会话与限速互不影响
+- **多账号并发**：状态库 `sqlweb.db` 的 `users` 表存多个账号，管理员可逐个分配"能看哪几个数据源"；多人不同账号同时用，会话与限速互不影响
 - **可见模式白名单**：每个数据源可配 `visible_schemas`，只把要给人看的库/模式列进对象树（达梦一长串 SYS / SYSDBA / EAL* 全都能藏掉）
-- **Redis 面板**：Redis 既在"新增数据源 → 数据库类型"下拉里（选 Redis 就填主机 / 端口 / 库号 / ACL 用户名，测试连与保存都落到 `config.json` 的 `redis` 段），也保留独立面板：概览（版本 / 内存 / 命中率 / keyspace）、SCAN 浏览 key（带类型与 TTL）、按 key 展开 string / hash / list / set / zset，以及命令框直接执行（只读实例按白名单放行）。管理员可在两处增删改 Redis 实例，并按账号分配可见实例
+- **Redis 面板**：Redis 既在"新增数据源 → 数据库类型"下拉里（选 Redis 就填主机 / 端口 / 库号 / ACL 用户名，测试连与保存都落到状态库 `sqlweb.db` 的 `redis` 表），也保留独立面板：概览（版本 / 内存 / 命中率 / keyspace）、SCAN 浏览 key（带类型与 TTL）、按 key 展开 string / hash / list / set / zset，以及命令框直接执行（只读实例按白名单放行）。管理员可在两处增删改 Redis 实例，并按账号分配可见实例
 - **表名搜索**：对象树顶部输入框，按表名模糊搜（不区分大小写）。已展开的库在本地即时过滤；停顿 350 ms 或回车则跨**所有可见模式**搜表，点结果直接看列、双击直接生成 `SELECT * FROM schema.table`。搜索严格受 `visible_schemas` 白名单约束，没权限的模式不会被搜到
 - **子路径部署**：支持 nginx 反代到 `/sqlweb/` 这类前缀，不需要改端口
 
@@ -49,7 +49,7 @@ cd sqlweb_offline_common_common-1.3.0
 ./install.sh
 ```
 
-`./install.sh` **不带参数即"一键部署"**：挑解释器 → 自检程序文件 → 探测六种驱动 → 生成 `config.json` → 后台启动 → 打印访问地址和初始化令牌。跑完直接打开浏览器即可。
+`./install.sh` **不带参数即"一键部署"**：挑解释器 → 自检程序文件 → 探测六种驱动 → 生成 `config.json`（首次启动即导入 `sqlweb.db`，随后改名留档）→ 后台启动 → 打印访问地址和初始化令牌。跑完直接打开浏览器即可。
 
 > 如果打包工具丢了执行权限（提示 `Permission denied`），用 `sh install.sh` 同样有效，不影响任何功能。
 
@@ -60,7 +60,7 @@ cd sqlweb_offline_common_common-1.3.0
 ./install.sh --check      # 只检查环境，不改任何文件（查驱动、查 Python、给建议）
 ./install.sh --foreground # 前台启动，Ctrl+C 退出（调试用）
 ./install.sh --no-start   # 只准备（生成配置），不启动
-./install.sh --port 8080  # 换端口（同时写回 config.json）
+./install.sh --port 8080  # 换端口（写进 config.json 种子 / 已在跑则写状态库）
 ./install.sh --host 127.0.0.1   # 只监听本机
 
 ./stop.sh                 # 停止后台服务
@@ -72,7 +72,7 @@ tail -f sqlweb.log        # 看日志（每次启动会保留上一轮为 sqlweb
 ```bash
 ./start.sh                      # 自动挑 .venv 或系统 python3
 ./start.sh --port 8899
-python3 sqlweb.py --config /path/to/config.json
+python3 sqlweb.py --config /path/to/sqlweb.db      # 也认旧的 config.json：首启一次性导入后改名留档
 ```
 
 macOS 上双击 `start.command` 同样可以启动。
@@ -149,7 +149,7 @@ sudo ./kylin.sh service uninstall   # 卸载（程序文件与配置保留）
 
 ### 3.4 首次启动必做：设置管理员
 
-第一次启动**没有** `auth.json`，服务会进入初始化模式，控制台（和 `install.sh` 的输出）会打印：
+第一次启动时状态库里还没有账号，服务会进入初始化模式，控制台（和 `install.sh` 的输出）会打印：
 
 ```
 ================================================================
@@ -164,7 +164,7 @@ sudo ./kylin.sh service uninstall   # 卸载（程序文件与配置保留）
 
 > 为什么要令牌：如果只靠"谁先访问谁设密码"，在有多个使用者的内网里，先手可能被别人抢走。令牌只在本次启动的进程内存里，重启即变。
 
-设置完成后 `auth.json` 落盘（权限 `0600`），以后就是普通登录。
+设置完成后账号写进 `sqlweb.db` 的 `users` 表（库文件权限 `0600`），以后就是普通登录。
 
 ---
 
@@ -269,7 +269,7 @@ python -m pip download -d wheels pymssql oracledb
 
 | 项 | 实现 |
 | --- | --- |
-| 口令存储 | `auth.json` 只存 `salt` + `PBKDF2-HMAC-SHA256` 哈希，20 万次迭代，文件权限 `0600`，原子写入（tmp + `os.replace`） |
+| 口令存储 | `sqlweb.db` 的 `users` 表只存 `salt` + `PBKDF2-HMAC-SHA256` 哈希，20 万次迭代；库文件权限 `0600`；每次落盘是一个事务（不会留半个文件） |
 | 时序侧信道 | 用户名错也跑一次假 PBKDF2，账号是否存在无法通过响应时间判断 |
 | 失败提示 | 用户名错与口令错返回**同一句话** |
 | 会话 | 32 字节随机 token，`httpOnly` + `SameSite=Strict` Cookie；TTL 8 小时，闲置 30 分钟失效；进程内存表，重启全部失效 |
@@ -299,9 +299,9 @@ python -m pip download -d wheels pymssql oracledb
 
 ### 5.4 多账号与可见范围（common-1.1.0 新增）
 
-**账号**：`auth.json` 升级为 v2 多用户格式，一个文件里存多个账号，各自独立 salt / hash / 迭代次数。
+**账号**：`sqlweb.db` 的 `users` 表存多个账号，各自独立 salt / hash / 迭代次数。
 
-旧版单用户 `auth.json` 启动时自动迁移成 `users[0]`（管理员，全部数据源可见），**旧口令继续可用**，下一次写盘时固化为 v2，不需要重新初始化。
+旧版单用户 `auth.json` 首次启动时自动导入状态库并迁成 `users[0]`（管理员，全部数据源可见），**旧口令继续可用**，下一次写盘时固化为 v2，不需要重新初始化。
 
 | 角色 | 能力 |
 | --- | --- |
@@ -323,17 +323,17 @@ python -m pip download -d wheels pymssql oracledb
 - 达梦里"库"就是 schema（即用户名），所以填 `MUAPP,MUCONFIG` 就能把 `SYS / SYSAUDITOR / SYSDBA / SYSSSO / EALDWD / EALEPM / EALODS` 一起藏掉
 - 白名单外的 schema 不是"藏起来但能绕"：带 `schema` 参数读表或执行 SQL 会直接 403
 
-**并发**：每次请求独立建连接、用完即关；服务端多线程处理请求；`config.json` 的写操作（增删改数据源）
+**并发**：每次请求独立建连接、用完即关；服务端多线程处理请求；状态库的写操作（增删改数据源 / Redis 实例 / 账号）
 用一把进程内锁串行化。所以多人同时查询互不干扰，有人同时在改数据源也不会读坏配置。
 
 实测：8 线程 × 6 次、两个账号混跑同一数据源，48/48 成功，平均 11 ms，无串号。
 
 ### 5.5 Redis 面板与按账号授权（common-1.2.0 新增，common-1.3.0 并入数据源下拉）
 
-Redis 有两个入口，**改的是同一份 `config.json` 的 `redis` 段**：
+Redis 有两个入口，**改的是同一份状态库 `sqlweb.db` 的 `redis` 表**；common-1.3.0 起顶栏不再单开 Redis 按钮，实例直接进数据源下拉的「Redis 缓存」组：
 
 1. **新增数据源 → 数据库类型 = Redis**（common-1.3.0 起）：字段是主机 / 端口 / 库号 `db` / ACL 用户名 / 口令 / 只读，测试连接与保存直接落到 `redis` 段，实例也列在数据源管理列表里（带 `redis` 角标），可"编辑 / 删除"。ACL 用户名与口令**编辑时留空即沿用原值**。
-2. **顶栏 Redis 按钮**（独立面板，功能更全）：登录后可见，**只有 `redis` 段里有实例、且该账号被授权时才出现**。
+2. **顶栏数据源下拉的「Redis 缓存」组**（选中某个实例即打开该实例面板，功能更全）：登录后，只有状态库里有实例、且该账号被授权时这一组才出现。
 
 | 区域 | 内容 |
 | --- | --- |
@@ -344,11 +344,11 @@ Redis 有两个入口，**改的是同一份 `config.json` 的 `redis` 段**：
 | 命令执行 | 单行命令（`GET user:1`、`HGETALL cfg:app`），返回 JSON 与耗时；`readonly` 实例只放行读命令白名单（GET / TYPE / TTL / SCAN / HGETALL / LRANGE / SMEMBERS / ZRANGE / INFO 等），写命令直接拒绝并给出改法 |
 | 实例配置（仅管理员） | 新增 / 编辑 / 删除实例，**改完立即生效**，不用重启 |
 
-**授权**：管理员在 **账号 → 编辑 → 可见 Redis** 勾选该账号能看哪些实例；不勾=该账号顶栏没有 Redis 按钮，直接调 `/api/redis/*` 返回 403。
+**授权**：管理员在 **账号 → 编辑 → 可见 Redis** 勾选该账号能看哪些实例；不勾=该账号的数据源下拉里没有「Redis 缓存」组，直接调 `/api/redis/*` 返回 403。
 
 - 管理员默认看全部实例，不受勾选限制
 - 每个实例独立 `readonly` 开关；写入需求要显式关掉（界面上就是那个"只读"勾选框）
-- `password` / `username` 只存在服务端 `config.json`，`/api/config` 返回给前端的实例信息不含口令
+- `password` / `username` 只存在服务端状态库，`/api/config` 返回给前端的实例信息不含口令
 
 **接口**：`GET /api/redis/overview|scan|key|info`、`POST /api/redis/run`（以上 5 个为查看与执行），加上新增的 `POST /api/redis/test|save|delete`（仅管理员，在配置写锁内执行）。
 
@@ -378,26 +378,29 @@ Redis 有两个入口，**改的是同一份 `config.json` 的 `redis` 段**：
 1. **新增数据源** → 选类型（下拉框里直接标出"可用/驱动缺失"）
 2. 填主机、端口、账号、口令、库名
 3. **先点"测试连接"**：失败会把驱动原始报错原样显示（例如 `RuntimeError: SQLite 文件不存在：/nope/x.db`），改好后再保存
-4. **保存数据源** → 写回 `config.json` 并热加载，**不需要重启**
+4. **保存数据源** → 写进状态库 `sqlweb.db` 并热加载，**不需要重启**
 5. 可"设默认 / 编辑 / 删除"
 
-> 首次部署生成的 `config.json` 里 `databases` 是**空数组**，登录后界面会直接进入"无数据源"引导态，点一下就能加第一台库。
+> 首次部署时状态库里的 `datasources` 是**空的**，登录后界面会直接进入"无数据源"引导态，点一下就能加第一台库。
 > 编辑已有数据源时，口令留空表示**沿用原口令**，不必重新输入。
 
 **加账号**（仅管理员）：右上角 **账号** → **新增账号** → 填用户名、口令，选角色，勾上这个账号能看的数据源 → 保存。
 
-**加 Redis**（仅管理员，两种方式等价）：**新增数据源** → 数据库类型选 **Redis** → 填主机 / 端口 / 库号 / ACL 用户名 /（口令）→ 测试连接 → 保存。也可用顶栏 **Redis** 面板里的"新增实例"，改的是同一份配置。
+**加 Redis**（仅管理员，两种方式等价）：**新增数据源** → 数据库类型选 **Redis** → 填主机 / 端口 / 库号 / ACL 用户名 /（口令）→ 测试连接 → 保存。也可在顶栏下拉里选中该实例后，点面板里的「新增实例」，改的是同一份配置。
 普通账号登录后，顶栏数据源下拉里只会出现被授权的源。
 
 **只显示选中的库/模式**：在数据源表单的 **可见模式** 里填逗号分隔的白名单（留空=全部）。
 对达梦这类"一个实例下几十个 schema"的场景，填 `MUAPP,MUCONFIG` 即可，对象树里就只剩这两项。
 
-**加 Redis 实例**（仅管理员）：右上角 **Redis** → 滚到 **Redis 实例配置** → **新增实例** → 填名称、主机、端口、库号、ACL 用户名（Redis 6+ 才需要）、口令，决定是否只读 → 先 **测试连接**（返回版本、角色、dbsize、已用内存）→ **保存**，立即生效不重启。
+**加 Redis 实例**（仅管理员）：顶栏数据源下拉里选中任一 Redis 实例 → 滚到 **Redis 实例配置** → **新增实例** → 填名称、主机、端口、库号、ACL 用户名（Redis 6+ 才需要）、口令，决定是否只读 → 先 **测试连接**（返回版本、角色、dbsize、已用内存）→ **保存**，立即生效不重启。
 口令留空表示沿用原口令；改主机端口和口令时都建议先测连再保存。
 
 ### 6.2 文件配置
 
-`config.json`（由 `config.example.json` 生成，两者字段一致）：
+**旧版 / 导入用的 JSON 格式**（`config.json`，由 `config.example.json` 生成，两者字段一致）。
+
+> common-1.3.0 起运行状态存在 `sqlweb.db`（SQLite，见 6.3），这个 JSON 只在**首次启动时被导入一次**，之后不再参与读写。
+> 下表的字段与状态库里的内容一一对应（`databases` → `datasources` 表、`redis` → `redis` 表、其余标量 → `kv` 表），所以字段含义照旧。
 
 ```json
 {
@@ -477,6 +480,40 @@ Redis 有两个入口，**改的是同一份 `config.json` 的 `redis` 段**：
 | `redis[].readonly` | 该实例只读：命令框只放行读命令白名单，写命令直接拒绝 |
 | `redis[].timeout` | 连接与单条命令超时（秒），默认 5 |
 
+### 6.3 状态存储：单文件 SQLite（common-1.3.0 起）
+
+运行状态（数据源、Redis 实例、账号）不再分散在很多个 JSON 里，统一落在程序目录的
+**`sqlweb.db`（单文件 SQLite）**：
+
+| 表 | 内容 |
+| --- | --- |
+| `kv` | 标量配置：`title` / `host` / `port` / `base_path` / `readonly` / `max_rows` / `default_db` … |
+| `datasources` | 每个数据源一行；`key` 主键，`payload` 存主机、端口、账号、口令、`visible_schemas` 等 |
+| `redis` | 每个 Redis 实例一行（含 ACL 用户名与口令），只存在服务端 |
+| `users` | 每个账号一行：`salt` + `hash`（PBKDF2-SHA256，20 万次）+ `role` + `allow_dbs` / `allow_redis` |
+| `meta` | 版本与迁移记录 |
+
+为什么换：JSON 是"读全量、改一处、写全量"，多人同时改只能靠进程内锁串行化，写入途中进程被杀容易留半个文件；而且账号、数据源、Redis 实例散在两个文件里，备份和回滚都不方便。换成一个 SQLite 文件后：
+
+- **一次改动一个事务**：要么整份生效，要么完全不变，不会出现半截配置
+- **备份只拷一个文件**：`cp sqlweb.db sqlweb.db.bak`（权限 `0600`，含口令，别外传）
+- **可以直接查**：`sqlite3 sqlweb.db "select key,payload from datasources"`
+- 多账号并发不用再靠"串行化一把锁兜住"的写法来保证正确性；查询本身依旧每次独立连接、用完即关
+
+**首次启动的迁移**：库里的 `datasources` / `users` 都还是空的时候，若同目录存在旧的 `config.json` / `auth.json`，服务会自动导入并把旧文件改名成
+`config.json.migrated-<时间戳>`、`auth.json.migrated-<时间戳>` 留档（只读旧文件，不删数据）。启动日志会打印：
+
+```
+已把旧配置迁入 SQLite：数据源 3 个、Redis 实例 1 个、账号 2 个
+  旧文件已留档: /opt/.../config.json.migrated-20261112_192331
+状态库: /opt/.../sqlweb.db（SQLite 单文件）
+```
+
+迁移只做一次：之后一律以 `sqlweb.db` 为准，再改旧 JSON 不会生效。
+
+**回滚**：想退回旧版（JSON 版）时，把 `*.migrated-*` 改回 `config.json` / `auth.json`，并删掉 `sqlweb.db` 即可——迁移过程没有改动这两个文件的内容。
+
+
 ---
 
 ## 7. nginx 反向代理（子路径）
@@ -502,7 +539,7 @@ location /sqlweb/ {
 }
 ```
 
-同时把 `config.json` 的 `base_path` 设成 `/sqlweb`。
+同时把 `base_path` 设成 `/sqlweb`（状态库 `kv` 表里的这个键；旧版是改 `config.json`）。
 
 服务侧会：剥离前缀、把 `window.__BASE__` 注入前端、Cookie 的 `Path` 自动带上前缀。**不设 `base_path` 时一切按根路径工作**，两种部署方式都不用改代码。
 
@@ -527,14 +564,14 @@ location /sqlweb/ {
 ### 8.1 升级到 1.3.0（从 1.0.0 / 1.1.0 / 1.2.0 都可以直接升）
 
 1. 停服务（`./stop.sh`，或 systemd `sudo systemctl stop sqlweb-offline`）
-2. 备份整目录（程序目录 + `auth.json` + `config.json`）。**不要把新包解压成一个新目录直接跑**——包里刻意不放 `config.json` / `auth.json`，直接跑会显示"数据源: 0 个"并走首次初始化
+2. 备份整目录（程序目录 + `sqlweb.db`，旧版再顺手备份 `auth.json` / `config.json`）。**不要把新包解压成一个新目录直接跑**——包里刻意不放 `sqlweb.db` / `config.json` / `auth.json`，直接跑会显示"数据源: 0 个"并走首次初始化
 3. 覆盖代码文件：`sqlweb.py`、`auth.py`、`index.html`、`README.md`（`login.html`、`captcha.py`、`drivers.py`、`redis_panel.py` 未变）
-4. **不要删 `auth.json` / `config.json`**：
-   - `auth.json` 从 v1 单用户启动时自动迁到 v2 多用户，旧管理员口令继续可用；v2 文件自动给每个账号补上空的 `allow_redis`（=没有 Redis 权限）
-   - `config.json` 里的老数据源自动补上空的 `visible_schemas`；原有 `redis` 段原样生效，**升级后前端 Redis 面板立即回来**
-   - 1.3.0 没有新增配置字段，旧 `config.json` 直接可用
+4. **不要删旧的 `auth.json` / `config.json`；也绝不要在已有 `sqlweb.db` 的目录里覆盖它们**：
+   - `auth.json`（v1 单用户或 v2 多用户）在首次启动时整批导入 `sqlweb.db` 的 `users` 表，旧管理员口令继续可用；没有 Redis 授权的账号导入后 `allow_redis` 为空（=看不到 Redis 实例）
+   - `config.json` 里的老数据源导入 `datasources` 表（缺 `visible_schemas` 的按"全部可见"处理）；原有 `redis` 段导入 `redis` 表，**升级后数据源下拉里的「Redis 缓存」组立即回来**
+   - 1.3.0 没有新增配置字段，旧 `config.json` / `auth.json` 直接可用——导入后原文件被改名为 `*.migrated-<时间>`，内容不动，可随时回滚
 5. 起服务（`./start.sh`，生产用 `sudo ./kylin.sh service install` 注册 `sqlweb-offline`）→ 用原管理员口令登录
-6. 校验升级：右上角同时出现 **账号** 与 **Redis** 按钮；**数据源管理 → 新增数据源 → 数据库类型**下拉里出现 **Redis** 一项；对象树标题下出现搜索框
+6. 校验升级：右上角出现 **账号** 按钮；顶栏数据源下拉里出现「Redis 缓存」组；**数据源管理 → 新增数据源 → 数据库类型**下拉里出现 **Redis** 一项；对象树标题下出现搜索框
 7. 之后在"数据源管理 → 编辑 → 可见模式"填 `MUAPP,MUCONFIG` 之类的白名单；在"账号"里给同事建普通账号并勾选可见数据源与可见 Redis
 
 ---
@@ -545,6 +582,7 @@ location /sqlweb/ {
 sqlweb_offline_common_common-1.3.0/
 ├── sqlweb.py              主程序：HTTP 路由、认证中间件、数据源 API、查询执行
 ├── drivers.py             多数据库适配层（6 个 Driver 类）
+├── store.py               状态存储层（SQLite：数据源 / Redis 实例 / 账号都在 sqlweb.db 里）
 ├── auth.py                AuthStore / SessionManager / RateLimiter / CaptchaStore（多账号 v2）
 ├── captcha.py             纯标准库 PNG 验证码
 ├── redis_panel.py         Redis 面板（移植自 v2.3）
@@ -561,8 +599,9 @@ sqlweb_offline_common_common-1.3.0/
 ├── start.bat              Windows 启动
 ├── stop.sh                停止后台服务
 ├── README.md              本文件
-├── config.json            （运行后生成，含连接信息，权限 600）
-├── auth.json              （初始化后生成，含口令哈希，权限 600）
+├── sqlweb.db              （运行后生成：数据源 / Redis 实例 / 账号，权限 600；备份拷它就够）
+├── config.json            （可选种子：首启导入后改名 config.json.migrated-<时间>）
+├── auth.json              （可选种子：首启导入后改名 auth.json.migrated-<时间>）
 ├── sqlweb.log             （后台启动时生成；上一轮为 sqlweb.log.prev）
 └── .sqlweb.pid            （后台启动时的进程号）
 ```
@@ -575,12 +614,12 @@ sqlweb_offline_common_common-1.3.0/
 - **`dmpy` 的事务语义不完整**：只读查数不受影响；需要事务的场景请用官方 `dmPython`
 - **会话存内存**：重启服务要重新登录（对离线运维工具是有意为之）
 - **仅 HTTP**：不做 TLS。对外暴露请走 nginx + HTTPS，或只绑 `127.0.0.1`
-- **数据源口令明文存 `config.json`**：这是离线内网工具的取舍。文件权限已设 `0600`，但服务器被拿到 root 就等于丢口令。若有更高要求，可改为启动时用环境变量注入
+- **数据源口令明文存 `sqlweb.db`**（未加密，只靠文件权限）：这是离线内网工具的取舍。库文件权限已设 `0600`，但服务器被拿到 root 就等于丢口令。若有更高要求，可改为启动时用环境变量注入
 - **跨库浏览是逐次重连**：PostgreSQL / SQL Server 一个连接只绑一个库，切库靠换 `dbname` 新建连接，切一次多一次建连开销（内网通常 < 0.2 s）。不要在一条 SQL 里跨库 JOIN —— 驱动层不支持，请分成两条查询
 - **MySQL 的库就是 schema**：`information_schema.SCHEMATA` 返回的已经是全部库，所以对象树只显示一层，不再套库节点。Oracle / 达梦的"库"即用户，同理单层
 - **`/etc/systemd/system` 需 root**：`kylin.sh service` 必须用 `sudo`；没有 sudo 的现场直接用 `./install.sh` 后台跑，功能一样
 - **表名搜索是逐模式扫表清单**：命中率高的关键字快（十几毫秒），但数据源里模式特别多、每模式表特别多时会明显变慢。为此加了 8 秒硬上限与 1000 条上限，超时/超量只返回已扫到的部分并在界面标"已截断"——想要全量结果就缩小关键字
-- **Redis 不是 SQL 数据源**：它只出现在"数据源类型"下拉里做配置管理，不进对象树、不能用 SQL 编辑器查询。要看 key 请用顶栏 **Redis** 面板
+- **Redis 不是 SQL 数据源**：它不进对象树、不能用 SQL 编辑器查询。要看 key 就在顶栏数据源下拉里选那个 Redis 实例（1.3.0 起已并入数据源，不再单开按钮）
 
 ---
 
@@ -594,12 +633,12 @@ sqlweb_offline_common_common-1.3.0/
 | 界面里某库显示"驱动缺失" | vendor 在的话先看解释器版本（3.7 下 SQL Server / Oracle 本就不可用）；否则把对应 whl 放进 `wheels/` 后重跑 `./install.sh` |
 | 登录页提示"验证码已失效" | 验证码 5 分钟过期且一次性，刷新图片重试 |
 | 登录 429 | 同一 IP 1 分钟内失败 5 次被限速，等 60 秒 |
-| 忘记管理员口令 | 删掉 `auth.json` 后重启，回到初始化模式（会打印新的初始化令牌） |
-| 改了 `config.json` 但界面没变 | 界面配置走接口落盘；手改文件需要重启服务。界面里改则不需要 |
+| 忘记管理员口令 | 停服后删掉 `sqlweb.db` 的 `users` 行（或整库），重启回到初始化模式并打印新令牌 |
+| 手改了 SQL / 状态库但界面没变 | 界面与接口一律以 `sqlweb.db` 为准；用 `sqlite3` 直接改库要重启服务才生效。界面里改则不用 |
 | 达梦在 mac 上报 `ModuleNotFoundError: dmPython` | 装纯 Python 驱动：`pip install dm-pure`，服务会自动降级（3.7 上走 vendor 里的 `dmpy`） |
 | Windows 下中文乱码 | 用 `chcp 65001` 或在 PowerShell 里跑；`start.bat` 已内置 |
 | 端口被占、启动后立刻退出 | `./install.sh` 会打印日志尾部；先 `./stop.sh`，或换端口 `./install.sh --port 8898` |
-| systemd 服务起不来 | `journalctl -u sqlweb-offline -n 50`；多半是端口占用或 `config.json` 内容有误 |
+| systemd 服务起不来 | `journalctl -u sqlweb-offline -n 50`；多半是端口占用或 `sqlweb.db` 内容有误（可用 `sqlite3 sqlweb.db .schema` 自查） |
 
 ---
 

@@ -23,3 +23,7 @@ ui-design-runs/
 # 改造过程中的一次性脚本
 _*.py
 _*.css
+sqlweb.db
+sqlweb.db-journal
+sqlweb.db.tmp
+*.migrated-*
