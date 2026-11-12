@@ -115,6 +115,18 @@
   .tnode.depth1{padding-left:14px}
   .tnode.depth2{padding-left:28px; font-size:12.4px}
   .tnode.depth3{padding-left:42px; font-size:12.2px}
+  /* 对象树搜索框 */
+  .tsearch{display:flex; align-items:center; gap:6px; padding:2px 10px 8px 10px}
+  .tsearch input{
+    flex:1; min-width:0; height:26px; padding:0 8px; font-size:12px;
+    border:1px solid #DCDFE5; border-radius:6px; background:#fff; color:inherit; outline:none;
+  }
+  .tsearch input:focus{border-color:var(--brand); box-shadow:0 0 0 2px var(--brand-soft)}
+  .tsearch input::placeholder{color:var(--muted)}
+  .tsearch .mini{cursor:pointer; user-select:none; color:var(--muted); font-size:11.5px; padding:2px 4px}
+  .tsearch .mini:hover{color:var(--brand-ink)}
+  .tsearch .mini.on{color:var(--brand)}
+  .tnode .nm .sch{color:var(--muted); font-size:11px}
   .treeload{padding:8px 16px; font-size:11.5px; color:var(--muted); line-height:1.7}
   .treeload.bad{color:var(--danger-ink)}
   .treefoot{flex:none; padding:8px 14px; border-top:1px solid var(--border);
@@ -346,6 +358,29 @@
     .picks select{max-width:150px}
     #btnPwd{display:none}
   }
+  /* ---------- Redis 面板 ---------- */
+  .rsplit { border-top: 1px solid #e2e8f0; margin: 14px 0 12px; }
+  .rrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .rrow .plb { font-size: 12px; color: #64748b; white-space: nowrap; }
+  .rrow input { height: 29px; border: 1px solid #cbd5e1; border-radius: 6px; padding: 0 9px;
+                font: inherit; font-size: 12.5px; color: #0f172a; background: #fff; }
+  .rov { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px 16px;
+         padding: 12px 14px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
+  .rov .k { font-size: 11px; color: #94a3b8; letter-spacing: .02em; }
+  .rov .v { font-size: 13px; color: #0f172a; font-variant-numeric: tabular-nums; word-break: break-all; }
+  .rov .v em { font-style: normal; color: #2563eb; }
+  .cmdout { font-family: Consolas, ui-monospace, monospace; font-size: 12px; color: #334155;
+            background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;
+            padding: 10px 12px; min-height: 54px; max-height: 240px; overflow: auto;
+            white-space: pre-wrap; word-break: break-all; }
+  .cmdout.bad { color: #b91c1c; background: #fef2f2; border-color: #fecaca; }
+  .rkv { max-height: 300px; overflow: auto; border: 1px solid #e2e8f0; border-radius: 8px; }
+  .rkv table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .rkv th { position: sticky; top: 0; background: #f1f5f9; color: #475569; font-weight: 600;
+            text-align: left; padding: 6px 10px; font-size: 11.5px; }
+  .rkv td { padding: 5px 10px; border-top: 1px solid #f1f5f9; color: #0f172a;
+            font-variant-numeric: tabular-nums; }
+  .rkv td.mono { font-family: Consolas, ui-monospace, monospace; word-break: break-all; }
 </style>
 </head>
 <body>
@@ -362,6 +397,8 @@
     <select id="libSelect" title="切换当前库"></select>
   </div>
   <button class="hbtn" id="btnDs">数据源管理</button>
+  <button class="hbtn" id="btnRedis" style="display:none">Redis</button>
+  <button class="hbtn" id="btnUsers" style="display:none">账号</button>
   <button class="hbtn" id="btnPwd">改密</button>
   <span class="who" id="whoLabel"></span>
   <button class="hbtn" id="btnLogout">退出</button>
@@ -370,6 +407,10 @@
 <main>
   <aside>
     <div class="asec"><span>对象树<span class="cnt" id="treeCnt"></span></span><span class="mini" id="btnRefresh">刷新</span></div>
+    <div class="tsearch">
+      <input id="treeQ" placeholder="搜表名（回车跨模式搜）" autocomplete="off" spellcheck="false">
+      <span class="mini" id="btnTreeQ" title="在所有可见模式里搜表">搜</span>
+    </div>
     <div class="tree" id="tree">
       <div class="treeload">正在加载…</div>
     </div>
@@ -463,6 +504,80 @@
   </div>
 </div>
 
+<div class="modal" id="modalRedis">
+  <div class="box" style="max-width:980px">
+    <div class="mhead">
+      <h3>Redis</h3>
+      <div class="grow"></div>
+      <button class="x" id="closeRedis">×</button>
+    </div>
+    <div class="mbody">
+      <div class="formgrid" style="margin-bottom:10px">
+        <label>实例</label>
+        <div id="rInstWrap"><select id="rInst" style="width:100%"></select></div>
+      </div>
+      <div id="rOverview"></div>
+
+      <div class="rsplit"></div>
+      <div class="rrow">
+        <span class="plb">匹配</span>
+        <input id="rPat" value="*" placeholder="如 user:*" style="width:170px">
+        <span class="plb">每批</span>
+        <input id="rCount" value="200" style="width:72px">
+        <button class="btn" id="btnRScan">扫描</button>
+        <button class="btn" id="btnRMore" style="display:none">继续</button>
+        <span class="stat" id="rScanStat"></span>
+      </div>
+      <div id="rKeys"></div>
+      <div id="rDetail"></div>
+
+      <div class="rsplit"></div>
+      <div class="rrow">
+        <span class="plb">命令</span>
+        <input id="rCmd" placeholder="如 GET user:1  或  HGETALL cfg:app" style="flex:1;min-width:240px">
+        <button class="btn run" id="btnRCmd">执行</button>
+      </div>
+      <div class="cmdout" id="rCmdOut">只读实例只放行读命令白名单（GET/TYPE/TTL/SCAN/HGETALL/LRANGE/SMEMBERS/ZRANGE/INFO…）</div>
+
+      <div id="rAdminWrap" style="display:none">
+        <div class="rsplit"></div>
+        <div class="rrow">
+          <span style="font-size:12.5px;font-weight:650">Redis 实例配置</span>
+          <span class="note" style="margin-left:8px">写在 config.json 的 redis 段，改完立即生效，不用重启</span>
+          <div class="grow"></div>
+          <button class="mini-btn" id="btnRNew">新增实例</button>
+        </div>
+        <div id="rList"></div>
+        <div id="rFormWrap"></div>
+      </div>
+    </div>
+    <div class="mfoot">
+      <span class="note" id="rFootNote">连接复用同一份 config.json；口令只存在服务端，界面不显示</span>
+      <div class="grow"></div>
+      <button class="btn" id="btnRedisClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modalUsers">
+  <div class="box" style="max-width:720px">
+    <div class="mhead">
+      <h3>账号管理</h3>
+      <div class="grow"></div>
+      <button class="x" id="closeUsers">×</button>
+    </div>
+    <div class="mbody">
+      <div id="usersBody"></div>
+      <div id="userFormWrap"></div>
+    </div>
+    <div class="mfoot">
+      <button class="btn" id="btnUserNew">新增账号</button>
+      <div class="grow"></div>
+      <button class="btn" id="btnUsersClose">关闭</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 <script>
 (function () {
@@ -475,11 +590,25 @@
     cfg: null, databases: [], drivers: [], defaultDb: "", db: "",
     databasesOfDb: [], database: "", currentDbNode: "",
     schemas: [], overview: null, expanded: {}, currentSchema: "",
-    lastResult: null, editingKey: null, busy: false
+    treeQ: "", searchHits: null, searchMeta: null, searchTimer: null,
+    formDriver: "", editingKind: null,
+    lastResult: null, editingKey: null, busy: false,
+    canManage: false, role: "user", me: "",
+    users: [], allDatabases: [], editingUser: null, userResetMode: false,
+    redis: [], allRedis: [], rKey: "", rCursor: "0", rKeys: [], rTotal: 0,
+    editingRedis: null
   };
 
   function url(p) { return BASE + p; }
   function enc(s) { return encodeURIComponent(s == null ? "" : s); }
+
+  // Redis 在「数据库类型」下拉里作为一个虚拟驱动出现：它不进 SQL 驱动体系，
+  // 保存后落到 config.json 的 redis 段（顶栏「Redis」面板负责浏览 key、执行命令）。
+  var REDIS_DRIVER = {
+    name: "redis", label: "Redis", default_port: 6379, available: true,
+    info: "Redis 不进 SQL 编辑器与对象树；保存后写入 config.json 的 redis 段，在顶栏「Redis」面板里浏览 key、执行命令"
+  };
+
   function esc(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -526,14 +655,25 @@
       state.databases = d.databases || [];
       state.defaultDb = d.default_db || (state.databases[0] && state.databases[0].key) || "";
       state.db = state.db || state.defaultDb;
+      state.canManage = !!d.can_manage;
+      state.role = d.role || "user";
+      state.me = d.user || "";
       $("verLabel").textContent = "v" + d.version;
-      $("whoLabel").textContent = d.user ? ("已登录：" + d.user) : "";
+      $("whoLabel").textContent = d.user
+        ? ("已登录：" + d.user + (state.canManage ? "（管理员）" : "")) : "";
+      // 普通账号看不到"数据源管理"和"账号"入口，改配置一律由管理员做
+      $("btnDs").style.display = state.canManage ? "" : "none";
+      $("btnUsers").style.display = state.canManage ? "" : "none";
+      // Redis 入口：有被授权的实例就显示；管理员即使还没配实例也显示（进去才能加）
+      state.redis = d.redis || [];
+      $("btnRedis").style.display = (state.canManage || state.redis.length) ? "" : "none";
       renderDbSelect();
       renderRoTag();
       if (!state.databases.length) {
         // 一个源都没有：进引导态，而不是留一个空白工作台或弹错误
         document.body.classList.add("nosrc");
-        $("tree").innerHTML = '<div class="treeload">还没有数据源</div>';
+        $("tree").innerHTML = '<div class="treeload">' +
+          (state.canManage ? "还没有数据源" : "当前账号没有被授权任何数据源，请联系管理员") + "</div>";
         $("treeCnt").textContent = "";
         $("treeFoot").textContent = "";
         renderLibSelect();
@@ -650,6 +790,7 @@
   }
 
   function loadTree() {
+    resetTreeSearch();
     $("tree").innerHTML = '<div class="treeload">正在加载对象…</div>';
     state.expanded = {};
     state.currentSchema = "";
@@ -679,6 +820,7 @@
     state.database = lib;
     state.expanded = {};
     state.currentSchema = "";
+    resetTreeSearch();
     $("tree").innerHTML = '<div class="treeload">正在切换库 ' + esc(lib) + " …</div>";
     apiGet(dbQuery()).then(function (d) {
       if (!d.ok) throw new Error(errMsg(d, "加载库失败"));
@@ -693,6 +835,29 @@
 
   function renderTree() {
     var ov = state.overview || {}, h = [];
+    var q = (state.treeQ || "").trim().toLowerCase();
+
+    // 跨模式搜索结果：扁平列出 schema.table，点一下直接进列（dblclick 直接生成查询）
+    if (state.searchHits) {
+      var hm = state.searchMeta || {};
+      h.push('<div class="treeload" style="padding:8px 10px;line-height:1.65">「' + esc(state.treeQ) + '」在 ' +
+             (hm.scanned || 0) + ' 个模式里命中 <b>' + state.searchHits.length + "</b> 张表" +
+             (hm.elapsed_ms ? ("（" + hm.elapsed_ms + " ms）") : "") +
+             (hm.truncated ? "<br>结果已截断，缩小关键字更准" : "") + "</div>");
+      if (!state.searchHits.length) {
+        h.push('<div class="treeload" style="color:#b45309">没有匹配的表名，换个关键字或清空搜索框</div>');
+      }
+      state.searchHits.forEach(function (x) {
+        h.push('<div class="tnode depth2" data-schema="' + esc(x.schema) + '" data-table="' + esc(x.table) +
+               '" title="' + esc(x.schema + "." + x.table) + '">' +
+               '<span class="ic">▪</span><span class="nm"><span class="sch">' + esc(x.schema) + ".</span>" +
+               esc(x.table) + "</span></div>");
+      });
+      $("tree").innerHTML = h.join("");
+      $("treeCnt").textContent = " · " + state.searchHits.length;
+      renderLibSelect();
+      return;
+    }
 
     // 从 depth 开始渲染 schema 层，表自动落在 depth+1
     function pushSchemas(depth) {
@@ -712,9 +877,12 @@
           h.push('<div class="treeload" style="padding-left:' + ((depth + 1) * 16) + 'px">加载表…</div>');
           return;
         }
-        var tbls = node.tables || [];
+        var all = node.tables || [];
+        // 本地搜索：已加载的表按关键字过滤；跨模式全量搜索走后端 /api/search_tables
+        var tbls = q ? all.filter(function (t) { return String(t).toLowerCase().indexOf(q) >= 0; }) : all;
         if (!tbls.length) {
-          h.push('<div class="treeload" style="padding-left:' + ((depth + 1) * 16) + 'px">（无表）</div>');
+          h.push('<div class="treeload" style="padding-left:' + ((depth + 1) * 16) + 'px">' +
+                 (q && all.length ? "无匹配表" : "（无表）") + "</div>");
           return;
         }
         tbls.forEach(function (t) {
@@ -749,6 +917,37 @@
     $("treeFoot").textContent = foot.join("  ·  ");
     $("treeFoot").title = ov.server || "";
     renderLibSelect();
+  }
+
+  function resetTreeSearch() {
+    if (state.searchTimer) { clearTimeout(state.searchTimer); state.searchTimer = null; }
+    state.treeQ = ""; state.searchHits = null; state.searchMeta = null;
+    var el = $("treeQ");
+    if (el) el.value = "";
+    var btn = $("btnTreeQ");
+    if (btn) btn.classList.remove("on");
+  }
+
+  function treeSearchRemote() {
+    var q = ($("treeQ").value || "").trim();
+    state.treeQ = q;
+    if (!q) { state.searchHits = null; renderTree(); return; }
+    if (q.length < 2) { state.searchHits = null; renderTree(); return; }
+    var btn = $("btnTreeQ");
+    if (btn) btn.classList.add("on");
+    var u = "/api/search_tables?db=" + enc(state.db) + "&q=" + enc(q) + "&limit=300";
+    if (state.database) u += "&database=" + enc(state.database);
+    apiGet(u).then(function (d) {
+      if (!d.ok) throw new Error(errMsg(d, "搜索失败"));
+      state.searchMeta = { scanned: d.scanned || 0, elapsed_ms: d.elapsed_ms || 0,
+                           truncated: !!d.truncated };
+      state.searchHits = d.data || [];
+      renderTree();
+    }).catch(function (e) {
+      state.searchHits = null;
+      renderTree();
+      toast(e.message);
+    }).then(function () { if (btn) btn.classList.remove("on"); });
   }
 
   function toggleSchema(s) {
@@ -920,7 +1119,8 @@
     $("modalDs").classList.add("show");
     state.editingKey = null;
     var need = state.drivers.length ? Promise.resolve() : apiGet("/api/drivers").then(function (d) {
-      if (d.ok) state.drivers = d.data || [];
+      // Redis 不是 SQL 驱动，但这里给它一个虚拟项，让它出现在「数据库类型」下拉里
+      if (d.ok) state.drivers = (d.data || []).concat([REDIS_DRIVER]);
     });
     need.then(function () {
       renderDsList();
@@ -958,6 +1158,21 @@
       h.push('<button class="mini-btn del" data-act="del" data-key="' + esc(d.key) + '">删除</button>');
       h.push("</div></div>");
     });
+    // Redis 实例也列在这张表里：它同样是“一个可连的东西”，只是不进对象树
+    state.redis.forEach(function (r) {
+      var addr = (r.host || "") + ":" + (r.port || "") + " / db" + (r.db || 0) +
+                 (r.username ? (" · ACL " + r.username) : "");
+      h.push('<div class="dsrow">');
+      h.push('<span class="nm">' + esc(r.label || r.key) + "</span>");
+      h.push('<span class="badge">redis</span>');
+      h.push('<span class="badge ' + (r.readonly === false ? "" : "ro") + '">' +
+             (r.readonly === false ? "可写" : "只读") + "</span>");
+      h.push('<span class="addr" title="' + esc(addr) + '">' + esc(addr) + "</span>");
+      h.push('<div class="act">');
+      h.push('<button class="mini-btn" data-rinst="1" data-act="edit" data-key="' + esc(r.key) + '">编辑</button>');
+      h.push('<button class="mini-btn del" data-rinst="1" data-act="del" data-key="' + esc(r.key) + '">删除</button>');
+      h.push("</div></div>");
+    });
     h.push("</div>");
     $("dsBody").innerHTML = h.join("");
   }
@@ -972,8 +1187,12 @@
   function renderDsForm(ds) {
     var wrap = $("dsFormWrap");
     if (!wrap) return;
-    var isEdit = !!ds;
+    // 「编辑」才算编辑：只有带 key 的才是已存在项，表单内切换类型时不会有 key
+    var isEdit = !!(ds && ds.key);
+    if (!ds) { state.editingKey = null; state.editingKind = null; }
     var d = ds || { driver: "postgresql", port: 5432, readonly: true };
+    state.formDriver = d.driver;
+    if (d.driver === "redis") { renderRedisDsForm(d, isEdit); return; }
     var drv = driverOf(d.driver) || { name: "postgresql", default_port: 5432, available: false, info: "" };
 
     var opts = state.drivers.map(function (x) {
@@ -1011,6 +1230,13 @@
            '>只读（拦截 INSERT/UPDATE/DELETE/DDL）</option><option value="0"' + (d.readonly ? "" : " selected") +
            ">可写（允许全部语句）</option></select></div>");
 
+    // 只显示选中的库/模式：白名单填在这里，对象树与元数据接口都只暴露这些
+    h.push("<label>可见模式</label>");
+    h.push('<div><input id="fVs" value="' + esc((d.visible_schemas || []).join(", ")) +
+           '" placeholder="留空 = 全部；多个用逗号分隔，如 MUCONFIG,MUAPP,MUCONFIG" style="width:100%">' +
+           '<div class="note" style="margin-top:4px">达梦的「库」就是模式（用户名）。只填要给人看的，' +
+           'SYS/SYSDBA/SYSAUDITOR 这类系统模式填进来也会被隐藏掉。</div></div>');
+
     h.push("</div>");
     h.push('<div class="testbox" id="dsTestBox"></div>');
     h.push('<div style="margin-top:14px;display:flex;gap:8px">');
@@ -1030,6 +1256,63 @@
     return el ? el.value : "";
   }
 
+  // Redis 数据源表单：字段与 SQL 数据源不同（库号/ACL 用户名），单独一套
+  function renderRedisDsForm(d, isEdit) {
+    var wrap = $("dsFormWrap");
+    if (!wrap) return;
+    state.formDriver = "redis";
+    isEdit = !!(d && d.key);
+    var opts = state.drivers.map(function (x) {
+      return '<option value="' + esc(x.name) + '"' + (x.name === "redis" ? " selected" : "") + ">" +
+        esc(x.label) + " — " + (x.available ? "可用" : "驱动缺失") + "</option>";
+    }).join("");
+    var h = ['<div style="border-top:1px solid #e2e8f0;padding-top:14px">'];
+    h.push('<div style="font-size:13px;font-weight:650;margin-bottom:12px">' +
+           (isEdit ? ("编辑 Redis 实例：" + esc(d.label || d.key)) : "新增数据源 · Redis") + "</div>");
+    h.push('<div class="formgrid">');
+    h.push('<label>名称</label><input id="fLabel" value="' + esc(d.label || "") + '" placeholder="如：生产缓存">');
+    h.push('<label>数据库类型</label><select id="fDriver">' + opts + "</select>");
+    h.push('<div class="note" id="fDrvNote" style="color:#15803d">' +
+           "Redis 不进 SQL 编辑器与对象树；保存后写入 config.json 的 redis 段，" +
+           "在顶栏「Redis」面板里浏览 key、查看详情、执行命令</div>");
+    h.push('<label>主机地址</label><input id="fHost" value="' + esc(d.host || "127.0.0.1") + '" placeholder="IP 或域名">');
+    h.push('<label>端口</label><input id="fPort" value="' + esc(d.port == null ? "6379" : d.port) + '">');
+    h.push('<label>库号 db</label><input id="fRdb" value="' + esc(d.db == null ? "0" : d.db) + '" placeholder="0-15">');
+    h.push('<label>ACL 用户名</label><input id="fUser" value="' + esc(d.username || "") +
+           '" autocomplete="off" placeholder="Redis 6+ 才需要；编辑时留空＝沿用">');
+    h.push('<label>口令</label><input id="fPasswd" type="password" value="" autocomplete="new-password" placeholder="' +
+           (isEdit ? "留空则不修改" : "没有口令就留空") + '">');
+    h.push("<label>访问模式</label>");
+    h.push('<div><select id="fReadonly"><option value="1"' + (d.readonly === false ? "" : " selected") +
+           '>只读（命令框只放行读命令）</option><option value="0"' + (d.readonly === false ? " selected" : "") +
+           ">可写（允许写命令）</option></select></div>");
+    h.push("</div>");
+    h.push('<div class="testbox" id="dsTestBox"></div>');
+    h.push('<div style="margin-top:14px;display:flex;gap:8px">');
+    h.push('<button class="btn" id="btnTestConn">测试连接</button>');
+    h.push('<button class="btn run" id="btnSaveDs">保存数据源</button>');
+    h.push('<button class="btn" id="btnCancelDs">取消</button>');
+    h.push("</div>");
+    h.push("</div>");
+    wrap.innerHTML = h.join("");
+    bindFormEvents();
+  }
+
+  function collectRedisDs() {
+    var inst = {
+      label: fb("fLabel").trim(),
+      host: fb("fHost").trim(),
+      port: fb("fPort").trim(),
+      db: fb("fRdb").trim(),
+      username: fb("fUser").trim(),
+      readonly: fb("fReadonly") === "1"
+    };
+    var pwd = document.getElementById("fPasswd");
+    if (pwd && pwd.value) inst.password = pwd.value;
+    if (state.editingKey && state.editingKind === "redis") inst.key = state.editingKey;
+    return inst;
+  }
+
   function collectDs() {
     var driver = fb("fDriver");
     var readonly = fb("fReadonly") === "1";
@@ -1045,6 +1328,8 @@
     };
     var pwd = document.getElementById("fPasswd");
     if (pwd && pwd.value) ds.password = pwd.value;
+    var vs = document.getElementById("fVs");
+    if (vs) ds.visible_schemas = vs.value.trim();
     if (state.editingKey) ds.key = state.editingKey;
     if (driver === "sqlite") {
       ds.dbname = ds.path;
@@ -1102,7 +1387,16 @@
 
   function bindFormEvents() {
     $("fDriver").addEventListener("change", function () {
-      var drv = driverOf($("fDriver").value);
+      var name = $("fDriver").value;
+      var drv = driverOf(name);
+      // Redis 与 SQL 是两套字段，类型在两者之间切换时整体重渲染
+      if (name === "redis" || state.formDriver === "redis") {
+        var seed = { driver: name, readonly: true };
+        seed.port = (drv && drv.default_port) || (name === "redis" ? 6379 : "");
+        if (name === "redis") { seed.host = "127.0.0.1"; seed.db = 0; }
+        renderDsForm(seed);
+        return;
+      }
       if (drv && drv.default_port !== null && drv.default_port !== undefined) {
         $("fPort").value = drv.default_port;
       }
@@ -1112,6 +1406,34 @@
 
   function testConnection() {
     var box = $("dsTestBox");
+    if (fb("fDriver") === "redis") {
+      var inst = collectRedisDs();
+      if (!inst.label) { toast("请先填写名称"); return; }
+      if (!inst.host) { toast("请填写主机地址"); return; }
+      box.className = "testbox";
+      box.textContent = "正在测试连接…";
+      box.style.display = "block";
+      box.style.background = "#f1f5f9";
+      box.style.border = "1px solid #e2e8f0";
+      box.style.color = "#475569";
+      apiPost("/api/redis/test", { inst: inst }).then(function (d) {
+        if (d.ok) {
+          box.className = "testbox ok";
+          box.textContent = "连接成功（" + (d.elapsed_ms || 0) + " ms）\n" +
+            "服务端版本: " + (d.version || "—") + "\n" +
+            "角色: " + (d.role || "—") + "\n" +
+            "当前 db 内 key 数: " + (d.dbsize == null ? "—" : d.dbsize) + "\n" +
+            "已用内存: " + (d.used_memory_human || "—");
+        } else {
+          box.className = "testbox err";
+          box.textContent = "连接失败\n" + errMsg(d, "未知错误");
+        }
+      }).catch(function (e) {
+        box.className = "testbox err";
+        box.textContent = "请求失败\n" + e.message;
+      });
+      return;
+    }
     var ds = collectDs();
     if (!ds.label) { toast("请先填写名称"); return; }
     if (ds.driver !== "sqlite" && !ds.host) { toast("请填写主机地址"); return; }
@@ -1139,6 +1461,19 @@
   }
 
   function saveDs() {
+    if (fb("fDriver") === "redis") {
+      var inst = collectRedisDs();
+      if (!inst.label) { toast("请先填写名称"); return; }
+      if (!inst.host) { toast("请填写主机地址"); return; }
+      apiPost("/api/redis/save", { inst: inst }).then(function (d) {
+        if (!d.ok) { toast(errMsg(d, "保存失败")); return; }
+        toast("已保存，正在刷新…");
+        state.editingKey = null;
+        state.editingKind = null;
+        return loadDatabases().then(function () { renderDsList(); renderDsForm(null); });
+      }).catch(function (e) { toast(e.message); });
+      return;
+    }
     var ds = collectDs();
     if (!ds.label) { toast("请填写名称"); return; }
     if (ds.driver !== "sqlite" && !ds.host) { toast("请填写主机地址"); return; }
@@ -1157,6 +1492,8 @@
     return apiGet("/api/config").then(function (d) {
       if (!d.ok) return;
       state.databases = d.databases || [];
+      state.redis = d.redis || [];
+      $("btnRedis").style.display = (state.canManage || state.redis.length) ? "" : "none";
       state.defaultDb = d.default_db || state.defaultDb;
       if (!state.db && state.databases.length) state.db = state.databases[0].key;
       var still = false;
@@ -1184,6 +1521,7 @@
     state.schemas = [];
     state.expanded = {};
     state.currentSchema = "";
+    resetTreeSearch();
     renderDbSelect();   // 顺带更新编辑区左上角的源标签（原来只刷了"只读"标签，标签会停在旧源）
     renderRoTag();
     loadTree();
@@ -1201,6 +1539,33 @@
     loadTree();
   });
   $("btnRefresh").addEventListener("click", function () { loadTree(); });
+
+  // 对象树搜索：本地实时过滤已加载的表；停顿 350ms 或回车则在所有可见模式里搜（后端接口）
+  $("treeQ").addEventListener("input", function () {
+    state.treeQ = (this.value || "").trim();
+    state.searchHits = null;
+    state.searchMeta = null;
+    if (state.searchTimer) clearTimeout(state.searchTimer);
+    if (state.treeQ.length >= 2) {
+      state.searchTimer = setTimeout(treeSearchRemote, 350);
+    } else {
+      renderTree();
+    }
+  });
+  $("treeQ").addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      if (state.searchTimer) { clearTimeout(state.searchTimer); state.searchTimer = null; }
+      treeSearchRemote();
+    } else if (ev.key === "Escape") {
+      resetTreeSearch();
+      renderTree();
+    }
+  });
+  $("btnTreeQ").addEventListener("click", function () {
+    if (state.searchTimer) { clearTimeout(state.searchTimer); state.searchTimer = null; }
+    treeSearchRemote();
+  });
 
   $("tree").addEventListener("click", function (ev) {
     var el = ev.target;
@@ -1280,6 +1645,32 @@
     var ds = null;
     state.databases.forEach(function (x) { if (x.key === key) ds = x; });
 
+    // Redis 实例行（同一张表里混排，按钮上带 data-rinst 区分）
+    if (t.getAttribute("data-rinst")) {
+      var r = null;
+      state.redis.forEach(function (x) { if (x.key === key) r = x; });
+      if (act === "edit") {
+        state.editingKey = key;
+        state.editingKind = "redis";
+        renderDsForm({
+          driver: "redis", key: key, label: (r && r.label) || key,
+          host: (r && r.host) || "127.0.0.1", port: (r && r.port) || 6379,
+          db: (r && r.db) || 0, username: (r && r.username) || "",
+          readonly: r ? r.readonly !== false : true
+        });
+      } else if (act === "del") {
+        if (!confirm("确认删除 Redis 实例「" + ((r && r.label) || key) + "」？")) return;
+        apiPost("/api/redis/delete", { key: key }).then(function (d) {
+          if (!d.ok) { toast(errMsg(d, "删除失败")); return; }
+          toast("已删除");
+          state.editingKey = null;
+          state.editingKind = null;
+          return loadDatabases().then(function () { renderDsList(); renderDsForm(null); });
+        }).catch(function (e) { toast(e.message); });
+      }
+      return;
+    }
+
     if (act === "def") {
       apiPost("/api/ds/default", { key: key }).then(function (d) {
         if (!d.ok) { toast(errMsg(d, "设置失败")); return; }
@@ -1288,6 +1679,7 @@
       }).catch(function (e) { toast(e.message); });
     } else if (act === "edit") {
       state.editingKey = key;
+      state.editingKind = "db";
       renderDsForm(ds);
     } else if (act === "del") {
       if (!confirm("确认删除数据源「" + (ds ? ds.label : key) + "」？")) return;
@@ -1312,6 +1704,631 @@
       state.editingKey = null;
       renderDsForm(null);
     }
+  });
+
+  /* ---------------- 账号管理（仅管理员） ---------------- */
+  function openUsers() {
+    state.editingUser = null;
+    state.userResetMode = false;
+    $("modalUsers").classList.add("show");
+    $("usersBody").innerHTML = '<div class="treeload">正在加载…</div>';
+    $("userFormWrap").innerHTML = "";
+    loadUsers().then(function () {
+      renderUsersList();
+      renderUserForm(null);
+    }).catch(function (e) {
+      $("usersBody").innerHTML = '<div class="treeload" style="color:#b91c1c">' + esc(e.message) + "</div>";
+    });
+  }
+
+  function closeUsers() { $("modalUsers").classList.remove("show"); }
+
+  function loadUsers() {
+    return apiGet("/api/users").then(function (d) {
+      if (!d.ok) throw new Error(errMsg(d, "加载账号失败"));
+      state.users = d.data || [];
+      state.allDatabases = d.databases || [];
+      state.allRedis = d.redis || [];
+      state.me = d.me || "";
+      return d;
+    });
+  }
+
+  function findUser(name) {
+    for (var i = 0; i < state.users.length; i++) {
+      if (state.users[i].user === name) return state.users[i];
+    }
+    return null;
+  }
+
+  function scopeText(u) {
+    if (u.role === "admin") return "全部数据源 / 全部 Redis";
+    var keys = u.allow_dbs || [];
+    var names = keys.map(function (k) {
+      for (var i = 0; i < state.allDatabases.length; i++) {
+        if (state.allDatabases[i].key === k) return state.allDatabases[i].label;
+      }
+      return k;
+    });
+    var s = names.length ? names.join("、") : "未授权任何数据源";
+    var rk = u.allow_redis || [];
+    if (rk.length) {
+      var rn = rk.map(function (k) {
+        for (var i = 0; i < state.allRedis.length; i++) {
+          if (state.allRedis[i].key === k) return state.allRedis[i].label || k;
+        }
+        return k;
+      });
+      s += " ｜ Redis：" + rn.join("、");
+    }
+    return s;
+  }
+
+  function renderUsersList() {
+    var h = ['<div class="dslist">'];
+    if (!state.users.length) h.push('<div class="dsrow"><span class="addr">还没有账号</span></div>');
+    state.users.forEach(function (u) {
+      var scope = scopeText(u);
+      h.push('<div class="dsrow">');
+      h.push('<span class="nm">' + esc(u.user) + (u.user === state.me ? " · 当前" : "") + "</span>");
+      h.push('<span class="badge ' + (u.role === "admin" ? "" : "ro") + '">' +
+             (u.role === "admin" ? "管理员" : "普通") + "</span>");
+      h.push('<span class="addr" title="' + esc(scope) + '">' + esc(scope) + "</span>");
+      h.push('<div class="act">');
+      h.push('<button class="mini-btn" data-act="edit" data-user="' + esc(u.user) + '">编辑</button>');
+      h.push('<button class="mini-btn" data-act="reset" data-user="' + esc(u.user) + '">重设口令</button>');
+      if (u.user !== state.me) {
+        h.push('<button class="mini-btn del" data-act="del" data-user="' + esc(u.user) + '">删除</button>');
+      }
+      h.push("</div></div>");
+    });
+    h.push("</div>");
+    var box = $("usersBody");
+    box.innerHTML = h.join("");
+    box.onclick = function (ev) {
+      var t = ev.target;
+      if (!t || !t.getAttribute) return;
+      var act = t.getAttribute("data-act"), name = t.getAttribute("data-user");
+      if (!act || !name) return;
+      if (act === "edit") {
+        state.editingUser = name; state.userResetMode = false;
+        renderUserForm(findUser(name), false);
+      } else if (act === "reset") {
+        state.editingUser = name; state.userResetMode = true;
+        renderUserForm(findUser(name), true);
+      } else if (act === "del") {
+        if (confirm("确定删除账号「" + name + "」？该账号的在线会话会立刻失效。")) delUser(name);
+      }
+    };
+  }
+
+  function renderUserForm(u, resetMode) {
+    var isEdit = !!u;
+    var d = u || { role: "user", allow_dbs: [] };
+    var h = ['<div style="border-top:1px solid #e2e8f0;padding-top:14px;margin-top:14px">'];
+    h.push('<div style="font-size:13px;font-weight:650;margin-bottom:12px">' +
+           (isEdit ? ("编辑账号：" + esc(d.user) + (resetMode ? "（重设口令）" : "")) : "新增账号") + "</div>");
+    h.push('<div class="formgrid">');
+
+    h.push("<label>用户名</label><div><input id=\"uName\" value=\"" + esc(d.user || "") + "\"" +
+           (isEdit ? ' readonly style="width:100%;background:#f1f5f9;color:#64748b"' : ' style="width:100%"') +
+           ' placeholder="如：zhangsan"></div>');
+
+    h.push("<label>口令</label><div><input id=\"uPwd\" type=\"password\" autocomplete=\"new-password\" style=\"width:100%\" placeholder=\"" +
+           (isEdit ? (resetMode ? "填新口令（≥8 位）" : "留空 = 不修改；要改就填 ≥8 位") : "至少 8 位") + '"></div>');
+
+    h.push("<label>角色</label><div><select id=\"uRole\" style=\"width:100%\">" +
+           '<option value="user"' + (d.role === "user" ? " selected" : "") + ">普通账号（只看被授权的数据源）</option>" +
+           '<option value="admin"' + (d.role === "admin" ? " selected" : "") + ">管理员（全部数据源 + 可管账号和数据源）</option>" +
+           "</select></div>");
+
+    h.push("<label>可见数据源</label><div id=\"uDbs\" style=\"display:flex;flex-wrap:wrap;gap:8px 16px;padding:4px 0\">");
+    (state.allDatabases || []).forEach(function (x) {
+      var on = d.role === "admin" || (d.allow_dbs || []).indexOf(x.key) >= 0;
+      h.push('<label style="display:flex;align-items:center;gap:5px;font-weight:400;font-size:12.5px;margin:0;white-space:nowrap">' +
+             '<input type="checkbox" value="' + esc(x.key) + '"' + (on ? " checked" : "") + ">" +
+             esc(x.label) + " · " + esc(x.driver) + "</label>");
+    });
+    if (!(state.allDatabases || []).length) {
+      h.push('<span style="font-size:12px;color:#94a3b8">还没有数据源，先去「数据源管理」加一个</span>');
+    }
+    h.push('<div class="note" style="width:100%;margin-top:2px">管理员不受该项限制；普通账号登录后只能看到这里勾选的数据源，其它源在接口层直接 403。</div>');
+    h.push("</div>");
+
+    h.push("<label>可见 Redis</label><div id=\"uRedis\" style=\"display:flex;flex-wrap:wrap;gap:8px 16px;padding:4px 0\">");
+    (state.allRedis || []).forEach(function (x) {
+      var on = d.role === "admin" || (d.allow_redis || []).indexOf(x.key) >= 0;
+      h.push('<label style="display:flex;align-items:center;gap:5px;font-weight:400;font-size:12.5px;margin:0;white-space:nowrap">' +
+             '<input type="checkbox" value="' + esc(x.key) + '"' + (on ? " checked" : "") + ">" +
+             esc((x.label || x.key) + " · " + x.host + ":" + x.port + "/" + x.db) + "</label>");
+    });
+    if (!(state.allRedis || []).length) {
+      h.push('<span style="font-size:12px;color:#94a3b8">还没有 Redis 实例，先在顶部「Redis」面板里加一个</span>');
+    }
+    h.push('<div class="note" style="width:100%;margin-top:2px">不勾选 = 该账号没有 Redis 入口；未授权的实例在接口层直接 403。</div>');
+    h.push("</div>");
+
+    h.push("</div>");
+    h.push('<div class="testbox" id="userMsg"></div>');
+    if (isEdit && d.user === state.me) {
+      h.push('<div class="note" style="color:#b45309;margin-bottom:8px">改自己的账号会让自己的会话立即失效，保存后需要重新登录。</div>');
+    }
+    h.push('<div style="margin-top:14px;display:flex;gap:8px">');
+    h.push('<button class="btn" id="btnUserCancel">取消</button>');
+    h.push('<button class="btn run" id="btnUserSave">' + (resetMode ? "重设口令" : "保存") + "</button>");
+    h.push("</div>");
+    h.push("</div>");
+    $("userFormWrap").innerHTML = h.join("");
+  }
+
+  function collectAllow() {
+    var allow = [], wrap = $("uDbs");
+    if (wrap) {
+      var cs = wrap.querySelectorAll('input[type=checkbox]');
+      for (var i = 0; i < cs.length; i++) if (cs[i].checked) allow.push(cs[i].value);
+    }
+    return allow;
+  }
+
+  function collectAllowRedis() {
+    var allow = [], wrap = $("uRedis");
+    if (wrap) {
+      var cs = wrap.querySelectorAll('input[type=checkbox]');
+      for (var i = 0; i < cs.length; i++) if (cs[i].checked) allow.push(cs[i].value);
+    }
+    return allow;
+  }
+
+  function saveUser() {
+    var box = $("userMsg");
+    var name = ($("uName").value || "").trim();
+    var pwd = ($("uPwd").value || "");
+    var role = $("uRole").value;
+    var editing = !!state.editingUser;
+    if (!name) { box.className = "testbox err"; box.textContent = "用户名不能为空"; return; }
+    if (!editing && pwd.length < 8) {
+      box.className = "testbox err"; box.textContent = "新账号口令至少 8 位"; return;
+    }
+    if (editing && pwd && pwd.length < 8) {
+      box.className = "testbox err"; box.textContent = "口令至少 8 位（留空表示不改）"; return;
+    }
+    if (state.userResetMode && !pwd) {
+      box.className = "testbox err"; box.textContent = "重设口令必须填新口令"; return;
+    }
+    var body = {
+      action: (state.userResetMode && editing) ? "reset" : "save",
+      user: name, password: pwd, role: role, allow_dbs: collectAllow(),
+      allow_redis: collectAllowRedis()
+    };
+    box.className = "testbox"; box.textContent = "正在保存…";
+    apiPost("/api/users", body).then(function (d) {
+      if (!d.ok) { box.className = "testbox err"; box.textContent = errMsg(d, "保存失败"); return; }
+      box.className = "testbox ok";
+      box.textContent = (d.message || "已保存") + "；如该账号在线，其旧会话已作废";
+      state.editingUser = null; state.userResetMode = false;
+      loadUsers().then(function () {
+        renderUsersList();
+        renderUserForm(null);
+      });
+    }).catch(function (e) { box.className = "testbox err"; box.textContent = e.message; });
+  }
+
+  function delUser(name) {
+    apiPost("/api/users", { action: "delete", user: name }).then(function (d) {
+      toast(d.ok ? (d.message || "已删除") : errMsg(d, "删除失败"));
+      if (d.ok) {
+        state.editingUser = null;
+        loadUsers().then(function () { renderUsersList(); renderUserForm(null); });
+      }
+    }).catch(function (e) { toast(e.message); });
+  }
+
+  $("btnUsers").addEventListener("click", openUsers);
+  $("closeUsers").addEventListener("click", closeUsers);
+  $("btnUsersClose").addEventListener("click", closeUsers);
+  $("modalUsers").addEventListener("click", function (ev) {
+    if (ev.target === this) closeUsers();
+  });
+  $("btnUserNew").addEventListener("click", function () {
+    state.editingUser = null;
+    state.userResetMode = false;
+    renderUserForm(null);
+  });
+  $("userFormWrap").addEventListener("click", function (ev) {
+    var t = ev.target;
+    if (!t || !t.id) return;
+    if (t.id === "btnUserSave") saveUser();
+    if (t.id === "btnUserCancel") {
+      state.editingUser = null;
+      state.userResetMode = false;
+      renderUserForm(null);
+    }
+  });
+
+  /* ---------------- Redis 面板 ---------------- */
+  function curRedisKey() {
+    var sel = $("rInst");
+    return (sel && sel.value) || (state.redis[0] && state.redis[0].key) || "";
+  }
+
+  function curRedis() {
+    var k = curRedisKey();
+    for (var i = 0; i < state.redis.length; i++) {
+      if (state.redis[i].key === k) return state.redis[i];
+    }
+    return null;
+  }
+
+  function openRedis() {
+    state.rKey = ""; state.rCursor = "0"; state.rKeys = [];
+    state.editingRedis = null;
+    $("modalRedis").classList.add("show");
+    $("rAdminWrap").style.display = state.canManage ? "" : "none";
+    $("rDetail").innerHTML = ""; $("rKeys").innerHTML = "";
+    $("rScanStat").textContent = "";
+    $("btnRMore").style.display = "none";
+    $("rCmd").value = "";
+    $("rCmdOut").className = "cmdout";
+    $("rCmdOut").textContent = "只读实例只放行读命令白名单（GET/TYPE/TTL/SCAN/HGETALL/LRANGE/SMEMBERS/ZRANGE/INFO…）";
+    renderRedisSelect();
+    if (state.canManage) renderRedisList();
+    if (!state.redis.length) {
+      $("rOverview").innerHTML = '<div class="treeload">' +
+        (state.canManage ? "还没有 Redis 实例，点下方「新增实例」加一个"
+                         : "当前账号没有被授权任何 Redis 实例，请联系管理员") + "</div>";
+      $("rFormWrap").innerHTML = "";
+      return;
+    }
+    loadRedisOverview();
+    redisScan(true);
+  }
+
+  function closeRedis() { $("modalRedis").classList.remove("show"); }
+
+  function renderRedisSelect() {
+    var sel = $("rInst");
+    sel.innerHTML = "";
+    state.redis.forEach(function (x) {
+      var o = document.createElement("option");
+      o.value = x.key;
+      o.textContent = (x.label || x.key) + "  ·  " + x.host + ":" + x.port + " / db" + x.db +
+                      (x.readonly ? "  · 只读" : "  · 可写");
+      sel.appendChild(o);
+    });
+    if (!state.redis.length) {
+      var o0 = document.createElement("option");
+      o0.value = ""; o0.textContent = "（无实例）";
+      sel.appendChild(o0);
+      sel.disabled = true;
+    } else {
+      sel.disabled = false;
+    }
+  }
+
+  function loadRedisOverview() {
+    var key = curRedisKey();
+    if (!key) return;
+    $("rOverview").innerHTML = '<div class="treeload">正在连接 ' + esc(key) + " …</div>";
+    apiGet("/api/redis/overview?redis=" + enc(key)).then(function (d) {
+      if (!d.ok) {
+        $("rOverview").innerHTML = '<div class="treeload" style="color:#b91c1c">' + esc(errMsg(d, "读取失败")) + "</div>";
+        return;
+      }
+      renderRedisOverview(d.data || {});
+    }).catch(function (e) {
+      $("rOverview").innerHTML = '<div class="treeload" style="color:#b91c1c">' + esc(e.message) + "</div>";
+    });
+  }
+
+  function renderRedisOverview(x) {
+    var ks = x.keyspace || {};
+    var cur = ks["db" + x.db] || {};
+    var cells = [
+      ["版本", x.version || "—"],
+      ["角色 / 模式", (x.role || "—") + (x.mode ? " / " + x.mode : "")],
+      ["已连接客户端", x.connected_clients || "—"],
+      ["运行天数", x.uptime_days || "—"],
+      ["已用内存", (x.used_memory_human || "—") + (x.maxmemory_human ? " / " + x.maxmemory_human : "")],
+      ["内存峰值", x.used_memory_peak_human || "—"],
+      ["db" + x.db + " keys", (x.keys || "0") + (x.expires ? "（已设过期 " + x.expires + "）" : "")],
+      ["DBSIZE", (x.dbsize === null || x.dbsize === undefined) ? "—" : String(x.dbsize)],
+      ["命中 / 未命中", (x.keyspace_hits || "0") + " / " + (x.keyspace_misses || "0")],
+      ["过期 / 淘汰", (x.expired_keys || "0") + " / " + (x.evicted_keys || "0")],
+      ["总命令数", x.total_commands_processed || "—"],
+      ["maxmemory 策略", x.maxmemory_policy || "—"]
+    ];
+    var h = ['<div class="rov">'];
+    cells.forEach(function (c) {
+      h.push('<div><div class="k">' + esc(c[0]) + '</div><div class="v">' + esc(c[1]) + "</div></div>");
+    });
+    h.push("</div>");
+    var dbs = Object.keys(ks);
+    if (dbs.length > 1) {
+      h.push('<div class="note" style="margin-top:6px">该实例共有 ' + dbs.length + " 个库有数据：" +
+             esc(dbs.map(function (n) { return n + "(" + ((ks[n] || {}).keys || 0) + ")"; }).join("  ")) +
+             "；面板操作的是 db" + esc(x.db) + "。</div>");
+    }
+    $("rOverview").innerHTML = h.join("");
+  }
+
+  function redisScan(reset) {
+    var key = curRedisKey();
+    if (!key) return;
+    if (reset) { state.rCursor = "0"; state.rKeys = []; }
+    var pattern = ($("rPat").value || "*").trim() || "*";
+    var count = parseInt($("rCount").value, 10) || 200;
+    if (count < 1) count = 1; if (count > 500) count = 500;
+    $("rCount").value = count;
+    $("rScanStat").textContent = "扫描中…";
+    apiGet("/api/redis/scan?redis=" + enc(key) + "&pattern=" + enc(pattern) +
+           "&cursor=" + enc(state.rCursor) + "&count=" + count)
+      .then(function (d) {
+        if (!d.ok) {
+          $("rScanStat").textContent = "";
+          $("rKeys").innerHTML = '<div class="treeload" style="color:#b91c1c">' + esc(errMsg(d, "扫描失败")) + "</div>";
+          return;
+        }
+        state.rCursor = String(d.cursor || 0);
+        state.rKeys = (reset ? [] : state.rKeys).concat(d.keys || []);
+        renderRedisKeys(d.done);
+      })
+      .catch(function (e) { $("rScanStat").textContent = ""; toast(e.message); });
+  }
+
+  function renderRedisKeys(done) {
+    var keys = state.rKeys;
+    $("rScanStat").textContent = "本次 " + keys.length + " 个 key" +
+      (done ? " · 扫描结束" : " · 游标 " + state.rCursor);
+    $("btnRMore").style.display = done ? "none" : "";
+    if (!keys.length) {
+      $("rKeys").innerHTML = '<div class="treeload">没有匹配的 key（模式：' + esc($("rPat").value) + "）</div>";
+      return;
+    }
+    var h = ['<div class="rkv"><table><thead><tr><th style="width:60%">key</th><th>类型</th><th>TTL</th></tr></thead><tbody>'];
+    keys.slice(0, 800).forEach(function (k) {
+      var ttl = (k.ttl === null || k.ttl === undefined) ? "?" : (k.ttl < 0 ? "常驻" : k.ttl + "s");
+      h.push('<tr data-key="' + esc(k.key) + '" style="cursor:pointer"><td class="mono">' + esc(truncate(k.key, 90)) +
+             '</td><td>' + esc(k.type || "?") + "</td><td>" + esc(String(ttl)) + "</td></tr>");
+    });
+    h.push("</tbody></table></div>");
+    if (keys.length > 800) h.push('<div class="note" style="margin-top:6px">列表只显示前 800 个，用「匹配」缩小范围</div>');
+    var box = $("rKeys");
+    box.innerHTML = h.join("");
+    box.onclick = function (ev) {
+      var tr = ev.target;
+      while (tr && tr.tagName !== "TR") tr = tr.parentNode;
+      if (!tr || !tr.getAttribute) return;
+      var k = tr.getAttribute("data-key");
+      if (k) loadRedisKey(k);
+    };
+  }
+
+  function loadRedisKey(k) {
+    var key = curRedisKey();
+    if (!key) return;
+    state.rKey = k;
+    $("rDetail").innerHTML = '<div class="treeload" style="margin-top:10px">读取 ' + esc(truncate(k, 70)) + " …</div>";
+    apiGet("/api/redis/key?redis=" + enc(key) + "&key=" + enc(k))
+      .then(function (d) {
+        if (!d.ok) {
+          $("rDetail").innerHTML = '<div class="treeload" style="color:#b91c1c">' + esc(errMsg(d, "读取失败")) + "</div>";
+          return;
+        }
+        renderRedisKey(d.data || {});
+      })
+      .catch(function (e) { toast(e.message); });
+  }
+
+  function renderRedisKey(d) {
+    var h = ['<div style="margin-top:12px"><div class="rrow" style="margin-bottom:6px">'];
+    h.push('<span style="font-size:12.5px;font-weight:650">' + esc(truncate(d.key, 80)) + "</span>");
+    h.push('<span class="badge ro">' + esc(d.type || "?") + "</span>");
+    h.push('<span class="note">TTL ' + esc(d.ttl < 0 ? "常驻" : d.ttl + "s") +
+           (d.encoding ? " · 编码 " + esc(d.encoding) : "") + " · 共 " + esc(String(d.total)) + "</span>");
+    h.push("</div>");
+    if (d.type === "string") {
+      h.push('<div class="cmdout" style="min-height:40px">' + esc(d.value == null ? "" : d.value) + "</div>");
+    } else if ((d.items || []).length) {
+      h.push('<div class="rkv"><table><thead><tr><th style="width:26%">index / field</th><th>value</th></tr></thead><tbody>');
+      d.items.forEach(function (it) {
+        h.push('<tr><td class="mono">' + esc(Array.isArray(it) ? it[0] : it) + '</td><td class="mono">' +
+               esc(Array.isArray(it) ? it[1] : "") + "</td></tr>");
+      });
+      h.push("</tbody></table></div>");
+    } else if (d.note) {
+      h.push('<div class="note">' + esc(d.note) + "</div>");
+    }
+    if (d.truncated) h.push('<div class="note" style="margin-top:6px">内容较长，只显示前一部分</div>');
+    h.push("</div>");
+    $("rDetail").innerHTML = h.join("");
+  }
+
+  function runRedisCmd() {
+    var key = curRedisKey();
+    var out = $("rCmdOut");
+    if (!key) { out.className = "cmdout bad"; out.textContent = "没有可用实例"; return; }
+    var cmd = ($("rCmd").value || "").trim();
+    if (!cmd) { out.className = "cmdout bad"; out.textContent = "命令为空"; return; }
+    out.className = "cmdout";
+    out.textContent = "执行中…";
+    apiPost("/api/redis/cmd", { redis: key, cmd: cmd }).then(function (d) {
+      if (!d.ok) {
+        out.className = "cmdout bad";
+        out.textContent = errMsg(d, "执行失败") + (d.error && d.error.stage ? "（" + d.error.stage + "）" : "");
+        return;
+      }
+      out.className = "cmdout";
+      var v = d.data;
+      out.textContent = (typeof v === "string" ? v : JSON.stringify(v, null, 2)) +
+                        (d.elapsed_ms != null ? "\n\n-- " + d.elapsed_ms + " ms" : "");
+    }).catch(function (e) { out.className = "cmdout bad"; out.textContent = e.message; });
+  }
+
+  /* ---- 实例配置（仅管理员） ---- */
+  function renderRedisList() {
+    var box = $("rList");
+    if (!box) return;
+    var h = ['<div class="dslist">'];
+    if (!state.redis.length) {
+      h.push('<div class="dsrow"><span class="addr">还没有 Redis 实例</span></div>');
+    }
+    state.redis.forEach(function (x) {
+      h.push('<div class="dsrow">');
+      h.push('<span class="nm">' + esc(x.label || x.key) + "</span>");
+      h.push('<span class="badge ' + (x.readonly ? "ro" : "") + '">' + (x.readonly ? "只读" : "可写") + "</span>");
+      h.push('<span class="addr">' + esc(x.host + ":" + x.port + " / db" + x.db) +
+             (x.has_auth ? " · 有口令" : "") + " · " + esc(x.key) + "</span>");
+      h.push('<div class="act">');
+      h.push('<button class="mini-btn" data-ract="edit" data-rkey="' + esc(x.key) + '">编辑</button>');
+      h.push('<button class="mini-btn del" data-ract="del" data-rkey="' + esc(x.key) + '">删除</button>');
+      h.push("</div></div>");
+    });
+    h.push("</div>");
+    box.innerHTML = h.join("");
+    box.onclick = function (ev) {
+      var t = ev.target;
+      if (!t || !t.getAttribute) return;
+      var act = t.getAttribute("data-ract"), rk = t.getAttribute("data-rkey");
+      if (act === "edit") {
+        for (var i = 0; i < state.redis.length; i++) {
+          if (state.redis[i].key === rk) { state.editingRedis = rk; renderRedisForm(state.redis[i]); break; }
+        }
+      } else if (act === "del") {
+        if (confirm("确定删除 Redis 实例「" + rk + "」？该实例的授权账号将立即失去入口。")) delRedisInst(rk);
+      }
+    };
+  }
+
+  function renderRedisForm(x) {
+    var isEdit = !!x;
+    var d = x || { host: "127.0.0.1", port: 6379, db: 0, readonly: true };
+    var h = ['<div style="border-top:1px solid #e2e8f0;padding-top:14px;margin-top:12px">'];
+    h.push('<div style="font-size:13px;font-weight:650;margin-bottom:12px">' +
+           (isEdit ? "编辑 Redis 实例：" + esc(d.label || d.key) : "新增 Redis 实例") + "</div>");
+    h.push('<div class="formgrid">');
+    h.push("<label>标识 key</label><div><input id=\"rFKey\" value=\"" + esc(d.key || "") + "\"" +
+           (isEdit ? ' readonly style="width:100%;background:#f1f5f9;color:#64748b"' : ' style="width:100%"') +
+           ' placeholder="留空自动生成，如 epm-cache"></div>');
+    h.push("<label>名称</label><div><input id=\"rFLabel\" value=\"" + esc(d.label || "") +
+           '" style="width:100%" placeholder="如：生产缓存"></div>');
+    h.push("<label>主机</label><div><input id=\"rFHost\" value=\"" + esc(d.host || "") +
+           '" style="width:100%" placeholder="10.49.10.137"></div>');
+    h.push("<label>端口</label><div><input id=\"rFPort\" value=\"" + esc(d.port || 6379) +
+           '" style="width:100%" placeholder="6379"></div>');
+    h.push("<label>库号 db</label><div><input id=\"rFDb\" value=\"" + esc(d.db == null ? 0 : d.db) +
+           '" style="width:100%" placeholder="0"></div>');
+    h.push("<label>用户名 ACL</label><div><input id=\"rFUser\" style=\"width:100%\" " +
+           'placeholder="Redis 6+ ACL 用户名，没有就留空"></div>');
+    h.push("<label>口令</label><div><input id=\"rFPass\" type=\"password\" autocomplete=\"new-password\" style=\"width:100%\" " +
+           'placeholder="' + (isEdit ? "留空 = 沿用原口令" : "没有就留空") + '"></div>');
+    h.push("<label>只读</label><div style=\"display:flex;align-items:center;gap:6px;padding:4px 0\">" +
+           '<input type="checkbox" id="rFRo"' + ((d.readonly !== false) ? " checked" : "") + ">" +
+           '<span style="font-size:12.5px;color:#475569">只放行读命令白名单，写命令一律拒绝</span></div>');
+    h.push("</div>");
+    h.push('<div class="testbox" id="rFMsg"></div>');
+    h.push('<div style="margin-top:10px;display:flex;gap:8px">');
+    h.push('<button class="btn" id="btnRCancelR">取消</button>');
+    h.push('<button class="btn" id="btnRTestR">测试连接</button>');
+    h.push('<button class="btn run" id="btnRSaveR">保存</button>');
+    h.push("</div></div>");
+    $("rFormWrap").innerHTML = h.join("");
+  }
+
+  function collectRedisInst() {
+    return {
+      key: ($("rFKey").value || "").trim(),
+      label: ($("rFLabel").value || "").trim(),
+      host: ($("rFHost").value || "").trim(),
+      port: ($("rFPort").value || "").trim(),
+      db: ($("rFDb").value || "").trim(),
+      username: ($("rFUser").value || "").trim(),
+      password: $("rFPass").value || "",
+      readonly: $("rFRo").checked
+    };
+  }
+
+  function testRedisInst() {
+    var box = $("rFMsg");
+    var inst = collectRedisInst();
+    if (!inst.host) { box.className = "testbox err"; box.textContent = "主机不能为空"; return; }
+    box.className = "testbox"; box.textContent = "正在连接 " + inst.host + ":" + (inst.port || 6379) + " …";
+    apiPost("/api/redis/test", { inst: inst }).then(function (d) {
+      if (!d.ok) { box.className = "testbox err"; box.textContent = errMsg(d, "连接失败"); return; }
+      box.className = "testbox ok";
+      box.textContent = "连接成功：Redis " + (d.version || "?") + " / " + (d.role || "?") +
+                        " / DBSIZE " + (d.dbsize == null ? "?" : d.dbsize) + " / " +
+                        (d.used_memory_human || "?") + "  (" + d.elapsed_ms + " ms)";
+    }).catch(function (e) { box.className = "testbox err"; box.textContent = e.message; });
+  }
+
+  function saveRedisInst() {
+    var box = $("rFMsg");
+    var inst = collectRedisInst();
+    if (!inst.host) { box.className = "testbox err"; box.textContent = "主机不能为空"; return; }
+    box.className = "testbox"; box.textContent = "正在保存…";
+    apiPost("/api/redis/save", { inst: inst }).then(function (d) {
+      if (!d.ok) { box.className = "testbox err"; box.textContent = errMsg(d, "保存失败"); return; }
+      toast("Redis 实例已保存：" + (d.key || ""));
+      state.editingRedis = null;
+      reloadRedisAll();
+    }).catch(function (e) { box.className = "testbox err"; box.textContent = e.message; });
+  }
+
+  function delRedisInst(k) {
+    apiPost("/api/redis/delete", { key: k }).then(function (d) {
+      toast(d.ok ? "实例已删除：" + k : errMsg(d, "删除失败"));
+      if (d.ok) { state.editingRedis = null; reloadRedisAll(); }
+    }).catch(function (e) { toast(e.message); });
+  }
+
+  function reloadRedisAll() {
+    apiGet("/api/config").then(function (d) {
+      if (!d.ok) return;
+      state.redis = d.redis || [];
+      renderRedisSelect();
+      renderRedisList();
+      $("rFormWrap").innerHTML = "";
+      $("btnRedis").style.display = (state.canManage || state.redis.length) ? "" : "none";
+      if (!state.redis.length) {
+        $("rOverview").innerHTML = '<div class="treeload">' +
+          (state.canManage ? "还没有 Redis 实例，点下方「新增实例」加一个"
+                           : "当前账号没有被授权任何 Redis 实例，请联系管理员") + "</div>";
+        $("rKeys").innerHTML = ""; $("rDetail").innerHTML = "";
+        return;
+      }
+      loadRedisOverview();
+      redisScan(true);
+    });
+  }
+
+  $("btnRedis").addEventListener("click", openRedis);
+  $("closeRedis").addEventListener("click", closeRedis);
+  $("btnRedisClose").addEventListener("click", closeRedis);
+  $("modalRedis").addEventListener("click", function (ev) {
+    if (ev.target === this) closeRedis();
+  });
+  $("rInst").addEventListener("change", function () {
+    state.rKey = ""; state.rCursor = "0"; state.rKeys = [];
+    $("rDetail").innerHTML = "";
+    loadRedisOverview();
+    redisScan(true);
+  });
+  $("btnRScan").addEventListener("click", function () { redisScan(true); });
+  $("btnRMore").addEventListener("click", function () { redisScan(false); });
+  $("btnRCmd").addEventListener("click", runRedisCmd);
+  $("rCmd").addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter") { ev.preventDefault(); runRedisCmd(); }
+  });
+  $("btnRNew").addEventListener("click", function () {
+    state.editingRedis = null;
+    renderRedisForm(null);
+  });
+  $("rFormWrap").addEventListener("click", function (ev) {
+    var t = ev.target;
+    if (!t || !t.id) return;
+    if (t.id === "btnRSaveR") saveRedisInst();
+    if (t.id === "btnRTestR") testRedisInst();
+    if (t.id === "btnRCancelR") { state.editingRedis = null; $("rFormWrap").innerHTML = ""; }
   });
 
   /* 改密 */
