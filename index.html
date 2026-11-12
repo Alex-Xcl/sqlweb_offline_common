@@ -78,6 +78,32 @@
   .hbtn.primary{background:var(--brand); border-color:var(--brand); color:#fff; font-weight:600}
   .hbtn.primary:hover{background:#2B49E6; color:#fff}
 
+  /* ---------- 顶栏连接区：绿点 · 版本 · 连接串 · 库下拉 · 只读徽标 ---------- */
+  header .dot{width:7px; height:7px; border-radius:50%; background:var(--ok); flex:none}
+  header .connchip{
+    font-family:var(--fm); font-size:11.5px; color:var(--ink2); white-space:nowrap;
+    background:var(--panel-2); border:1px solid var(--border); border-radius:var(--r-ctrl);
+    padding:4px 9px; max-width:330px; overflow:hidden; text-overflow:ellipsis;
+  }
+  header .navsel{
+    height:30px; min-width:160px; max-width:280px; border-radius:var(--r-card);
+    border:1px solid var(--border-s); background:var(--bg); color:var(--ink);
+    padding:0 26px 0 9px; font-size:12.5px; outline:none; cursor:pointer;
+    font-family:var(--fm); appearance:none; -webkit-appearance:none;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%237A828B' stroke-width='1.4' fill='none' stroke-linecap='round'/></svg>");
+    background-repeat:no-repeat; background-position:right 9px center;
+  }
+  header .navsel:focus{border-color:var(--brand); box-shadow:0 0 0 3px var(--brand-soft)}
+  header .navsel:disabled{opacity:.45; cursor:not-allowed}
+  header .ver{margin-left:2px}
+  header .tag{
+    flex:none; white-space:nowrap; font-size:11px; padding:2px 8px;
+    border-radius:var(--r-pill); background:var(--brand-soft); color:var(--brand-ink);
+    border:1px solid transparent;
+  }
+  header .tag.ro{background:var(--ok-soft); color:var(--ok-ink)}
+  header .tag.rw{background:var(--danger-soft); color:var(--danger-ink)}
+
   /* ---------- 主体 ---------- */
   main{flex:1; display:flex; min-height:0}
   aside{
@@ -346,7 +372,6 @@
   .toast.show{opacity:1; transform:translateX(-50%) translateY(0)}
   /* 顶栏收窄：先把不必要的信息退掉，再缩下拉，最后才折行 */
   @media (max-width:1180px){
-    header .ver{display:none}
     header .who{display:none}
     .picks select{max-width:180px}
   }
@@ -386,16 +411,11 @@
 <body>
 
 <header>
-  <div class="logo"><span class="sq">SQL</span>SQLWeb</div>
-  <div class="ver" id="verLabel"></div>
+  <div class="logo"><span class="dot"></span>SQLWeb 控制台<span class="ver" id="verLabel"></span></div>
+  <span class="connchip" id="connChip" title="当前连接">—</span>
+  <select class="navsel" id="dbSelect" title="切换数据库"></select>
+  <span class="tag ro" id="tagRo">只读</span>
   <div class="grow"></div>
-  <div class="picks">
-    <span class="plb">数据源</span>
-    <select id="dbSelect" title="切换数据源"></select>
-    <span class="pdiv"></span>
-    <span class="plb">当前库</span>
-    <select id="libSelect" title="切换当前库"></select>
-  </div>
   <button class="hbtn" id="btnDs">数据源管理</button>
   <button class="hbtn" id="btnRedis" style="display:none">Redis</button>
   <button class="hbtn" id="btnUsers" style="display:none">账号</button>
@@ -408,7 +428,7 @@
   <aside>
     <div class="asec"><span>对象树<span class="cnt" id="treeCnt"></span></span><span class="mini" id="btnRefresh">刷新</span></div>
     <div class="tsearch">
-      <input id="treeQ" placeholder="搜表名（回车跨模式搜）" autocomplete="off" spellcheck="false">
+      <input id="treeQ" placeholder="过滤表名…" autocomplete="off" spellcheck="false">
       <span class="mini" id="btnTreeQ" title="在所有可见模式里搜表">搜</span>
     </div>
     <div class="tree" id="tree">
@@ -590,6 +610,7 @@
     cfg: null, databases: [], drivers: [], defaultDb: "", db: "",
     databasesOfDb: [], database: "", currentDbNode: "",
     schemas: [], overview: null, expanded: {}, currentSchema: "",
+    dbLibs: {}, schemaCounts: {},
     treeQ: "", searchHits: null, searchMeta: null, searchTimer: null,
     formDriver: "", editingKind: null,
     lastResult: null, editingKey: null, busy: false,
@@ -669,6 +690,7 @@
       $("btnRedis").style.display = (state.canManage || state.redis.length) ? "" : "none";
       renderDbSelect();
       renderRoTag();
+      ensureDbLibs();
       if (!state.databases.length) {
         // 一个源都没有：进引导态，而不是留一个空白工作台或弹错误
         document.body.classList.add("nosrc");
@@ -693,15 +715,9 @@
   }
 
   function renderDbSelect() {
-    var sel = $("dbSelect"), ds = currentDs();
+    var sel = $("dbSelect");
+    if (!sel) return;
     sel.innerHTML = "";
-    state.databases.forEach(function (d) {
-      var o = document.createElement("option");
-      o.value = d.key;
-      o.textContent = d.label + "  ·  " + d.driver;
-      if (d.key === state.db) o.selected = true;
-      sel.appendChild(o);
-    });
     if (!state.databases.length) {
       // 一个源都没有时，下拉里放一句实话，别留一个空框
       var o0 = document.createElement("option");
@@ -709,11 +725,97 @@
       o0.textContent = "未配置数据源";
       sel.appendChild(o0);
       sel.disabled = true;
-    } else {
-      sel.disabled = false;
+      renderConnChip();
+      renderRoTag();
+      return;
     }
-    $("tagDb").textContent = ds ? ds.label : "无数据源";
-    $("tagDb").title = ds ? (ds.driver + " " + (ds.host || "") + " " + (ds.dbname || "")) : "";
+    sel.disabled = false;
+    // 一个下拉同时定下「连哪个源」和「进哪个库」：按数据源分组（optgroup），组内是它的库
+    state.databases.forEach(function (d) {
+      var og = document.createElement("optgroup");
+      var dr = driverOf(d.driver);
+      og.label = d.label + " · " + (dr ? dr.label : d.driver);
+      var libs = state.dbLibs[d.key];
+      if (libs === undefined) {
+        var pending = document.createElement("option");
+        pending.value = d.key; pending.textContent = "（正在读取库…）"; pending.disabled = true;
+        og.appendChild(pending);
+      } else if (!libs.length) {
+        // Oracle / 达梦 / MySQL 这类「一个连接就是一个库」的驱动没有库清单，就用源自己顶上
+        var only = document.createElement("option");
+        only.value = d.key; only.textContent = d.dbname || d.label;
+        og.appendChild(only);
+      } else {
+        libs.forEach(function (l) {
+          var o = document.createElement("option");
+          o.value = d.key;
+          o.setAttribute("data-db", l);
+          o.textContent = l + (libTag(l) ? "  ·  " + libTag(l) : "");
+          og.appendChild(o);
+        });
+      }
+      sel.appendChild(og);
+    });
+    // 回填选中项：源和库都要对上；对不上就退回「源」这一层
+    var hit = false;
+    for (var i = 0; i < sel.options.length; i++) {
+      var op = sel.options[i];
+      if (op.value === state.db && (op.getAttribute("data-db") || "") === (state.database || "")) {
+        sel.selectedIndex = i; hit = true; break;
+      }
+    }
+    if (!hit) {
+      for (var j = 0; j < sel.options.length; j++) {
+        if (sel.options[j].value === state.db) { sel.selectedIndex = j; break; }
+      }
+    }
+    sel.title = state.databases.length + " 个数据源";
+    renderConnChip();
+    $("tagDb").textContent = currentDs() ? currentDs().label : "无数据源";
+    renderRoTag();
+  }
+
+  // 库名后缀就是用途：xxCONF / xxCONFIG 是系统配置库，xxAPP 是业务表库
+  function libTag(name) {
+    var n = String(name || "").toUpperCase();
+    if (n.indexOf("CONF") >= 0) return "配置库";
+    if (n.indexOf("APP") >= 0) return "业务库";
+    return "";
+  }
+
+  // 顶栏连接串：用户名@主机:端口/库 —— 一眼看出「我现在连的是谁」
+  function renderConnChip() {
+    var el = $("connChip");
+    if (!el) return;
+    var ds = currentDs();
+    if (!ds) { el.textContent = "—"; el.title = ""; return; }
+    var s;
+    if (ds.driver === "sqlite") {
+      s = ds.path || ds.dbname || "";
+    } else {
+      var lib = state.database || ds.dbname || "";
+      s = (ds.user || "") + "@" + (ds.host || "") + (ds.port ? (":" + ds.port) : "") +
+          (lib ? ("/" + lib) : "");
+    }
+    el.textContent = s;
+    el.title = s;
+  }
+
+  // 库清单按源懒加载：已知的先用，缺的再向 /api/databases 要一次
+  function ensureDbLibs() {
+    state.databases.forEach(function (d) {
+      if (state.dbLibs[d.key] !== undefined) return;
+      if (d.key === state.db && (state.databasesOfDb || []).length) {
+        state.dbLibs[d.key] = state.databasesOfDb.slice();
+        return;
+      }
+      state.dbLibs[d.key] = [];
+      apiGet("/api/databases?db=" + enc(d.key)).then(function (r) {
+        state.dbLibs[d.key] = (r && r.ok) ? (r.data || []) : [];
+      }).catch(function () {
+        state.dbLibs[d.key] = [];
+      }).then(function () { renderDbSelect(); });
+    });
   }
 
   /* 库分组的规则：系统库单列，其余按首个下划线前的前缀聚成“xx 系列”，
@@ -799,6 +901,8 @@
       state.overview = d.data || {};
       state.schemas = state.overview.schemas || [];
       state.databasesOfDb = state.overview.databases || [];
+      state.dbLibs[state.db] = state.databasesOfDb.slice();
+      state.schemaCounts = state.overview.schema_counts || {};
       // 首次进来没选库时，对齐到连接实际落在的那个库（dbname 留空时靠 current_database 判断）
       if (!state.database && state.databasesOfDb.length) {
         var cur = state.overview.current_database || (currentDs() || {}).dbname;
@@ -827,6 +931,8 @@
       state.overview = d.data || {};
       state.schemas = state.overview.schemas || [];
       state.databasesOfDb = state.overview.databases || [];
+      state.dbLibs[state.db] = state.databasesOfDb.slice();
+      state.schemaCounts = state.overview.schema_counts || {};
       renderTree();
     }).catch(function (e) {
       $("tree").innerHTML = '<div class="treeload" style="color:#f87171">' + esc(e.message) + "</div>";
@@ -871,7 +977,9 @@
         h.push('<div class="tnode depth' + depth + (state.currentSchema === s ? " active" : "") +
                '" data-schema="' + esc(s) + '">' +
                '<span class="ic">' + (open ? "▾" : "▸") + "</span>" +
-               '<span class="nm" title="' + esc(s) + '">' + esc(s) + "</span></div>");
+               '<span class="nm" title="' + esc(s) + '">' + esc(s) + "</span>" +
+               (state.schemaCounts[s] != null ? '<span class="cnt">' + state.schemaCounts[s] + "</span>" : "") +
+               "</div>");
         if (!open) return;
         if (node.loading) {
           h.push('<div class="treeload" style="padding-left:' + ((depth + 1) * 16) + 'px">加载表…</div>');
@@ -1506,38 +1614,36 @@
         state.expanded = {};
         state.currentSchema = "";
       }
+      state.dbLibs = {};
       renderDbSelect();
       renderRoTag();
+      ensureDbLibs();
       return loadTree();
     });
   }
 
   /* ---------------- 绑定 ---------------- */
+  // 顶栏下拉：一项同时决定数据源和库。换库是换 dbname 重连，只读浏览，不写回 config.json
   $("dbSelect").addEventListener("change", function () {
-    state.db = this.value;
-    // 换数据源后库/模式选择全部归零，否则会拿旧库的名字去新源上查
-    state.database = "";
-    state.databasesOfDb = [];
+    var opt = this.options[this.selectedIndex];
+    if (!opt) return;
+    var key = opt.value, lib = opt.getAttribute("data-db") || "";
+    state.db = key;
+    state.database = lib;
+    state.databasesOfDb = (state.dbLibs[key] || []).slice();
     state.schemas = [];
     state.expanded = {};
     state.currentSchema = "";
+    state.schemaCounts = {};
     resetTreeSearch();
-    renderDbSelect();   // 顺带更新编辑区左上角的源标签（原来只刷了"只读"标签，标签会停在旧源）
+    renderDbSelect();
+    renderConnChip();
     renderRoTag();
+    if (!state.db) return;
     loadTree();
   });
+  $("dbSelect").addEventListener("focus", ensureDbLibs);
 
-  // 顶栏「当前库」下拉：换库只是临时换连接去读，不写回 config.json
-  $("libSelect").addEventListener("change", function () {
-    var v = this.value;
-    if (!v || v === state.database) return;
-    state.database = v;
-    state.schemas = [];
-    state.expanded = {};
-    state.currentSchema = "";
-    $("tree").innerHTML = '<div class="treeload">正在切换库 ' + esc(v) + " …</div>";
-    loadTree();
-  });
   $("btnRefresh").addEventListener("click", function () { loadTree(); });
 
   // 对象树搜索：本地实时过滤已加载的表；停顿 350ms 或回车则在所有可见模式里搜（后端接口）
@@ -2381,6 +2487,12 @@
     });
     window.addEventListener("mouseup", function () { dragging = false; });
   })();
+
+  /* 启动：顶栏分组的组标题要用驱动中文名，先把驱动清单拿回来（拿不到也不挡主流程） */
+  apiGet("/api/drivers").then(function (d) {
+    if (d.ok) state.drivers = (d.data || []).concat([REDIS_DRIVER]);
+    renderDbSelect();
+  }).catch(function () {});
 
   /* 启动 */
   loadConfig().catch(function (e) { toast(e.message); });

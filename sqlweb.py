@@ -1082,6 +1082,12 @@ class Handler(BaseHTTPRequestHandler):
             if dbname:
                 ds = dict(ds, dbname=dbname)
 
+            if path == "/api/databases":
+                # 顶栏下拉要按数据源分组列出库，所以每个源都要能单独问一句「你有哪些库」。
+                # 只读连接、不落盘；取不到就返回空数组，由前端退化成单一选项。
+                data = self._with_conn(ds, drv, lambda c: drv.databases(c)) or []
+                return self._json({"ok": True, "db": ds["key"], "data": data})
+
             if path == "/api/overview":
                 return self._json({"ok": True, "db": ds["key"], "data": self._overview(ds, drv)})
             if path == "/api/schemas":
@@ -1152,6 +1158,24 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _schema_counts(self, conn, drv, schemas):
+        """可见模式各自的表数。统计失败只影响右侧数字，绝不能让对象树加载失败。"""
+        try:
+            counts = drv.schema_table_counts(conn) or {}
+        except Exception:
+            return {}
+        upper = {}
+        for k, v in counts.items():
+            upper[str(k).upper()] = v
+        out = {}
+        for s in schemas:
+            v = counts.get(s)
+            if v is None:
+                v = upper.get(str(s).upper())
+            if v is not None:
+                out[s] = v
+        return out
+
     def _overview(self, ds, drv):
         conn = drv.connect(ds, timeout=self._ct(),
                            statement_timeout_ms=(AppState.cfg or {}).get("statement_timeout_ms", 30000))
@@ -1161,6 +1185,8 @@ class Handler(BaseHTTPRequestHandler):
             out["db"] = ds.get("key")
             out["schemas"] = filter_schemas(ds, out.get("schemas") or [])
             out["default_schema"] = (out.get("schemas") or [""])[0]
+            # 白名单内的每个模式有几张表：schema 行右侧显示（如 public 73）
+            out["schema_counts"] = self._schema_counts(conn, drv, out.get("schemas") or [])
             return out
         finally:
             try:

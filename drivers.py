@@ -197,7 +197,6 @@ class Driver(object):
 
     def server_info(self, conn):
         return ""
-
     def overview(self, conn):
         """对象树顶层：库清单 + schema 数量。"""
         out = {"server": self.server_info(conn), "databases": [], "schemas": [],
@@ -215,6 +214,15 @@ class Driver(object):
         except Exception as e:
             out["schema_error"] = "%s: %s" % (type(e).__name__, e)
         return out
+
+    def schema_table_counts(self, conn):
+        """每个模式有多少张表：{模式名: 数量}。
+
+        对象树里 schema 行右侧要显示表数（如 public 73），必须一次查询算全部；
+        逐个模式去数就是几十次往返。默认返回空字典（不显示数量、不报错），
+        由各驱动覆盖成自己的批量统计 SQL。
+        """
+        return {}
 
 
 # ---------------------------------------------------------------- PostgreSQL
@@ -297,7 +305,15 @@ class PostgresDriver(Driver):
         finally:
             cur.close()
 
-
+    def schema_table_counts(self, conn):
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT schemaname, count(*) FROM pg_tables GROUP BY 1")
+            return {_to_str(r[0]): int(r[1]) for r in cur.fetchall()}
+        except Exception:
+            return {}
+        finally:
+            cur.close()
 # ---------------------------------------------------------------- MySQL
 class MySQLDriver(Driver):
     name = "mysql"
@@ -369,7 +385,15 @@ class MySQLDriver(Driver):
         finally:
             cur.close()
 
-
+    def schema_table_counts(self, conn):
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT TABLE_SCHEMA, count(*) FROM information_schema.TABLES GROUP BY 1")
+            return {_to_str(r[0]): int(r[1]) for r in cur.fetchall()}
+        except Exception:
+            return {}
+        finally:
+            cur.close()
 # ---------------------------------------------------------------- SQL Server
 class SQLServerDriver(Driver):
     name = "sqlserver"
@@ -449,7 +473,17 @@ class SQLServerDriver(Driver):
         finally:
             cur.close()
 
-
+    def schema_table_counts(self, conn):
+        # SQL Server 的 schema 属于当前库，统计也只在当前库内
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT s.name, COUNT(*) FROM sys.tables t "
+                        "JOIN sys.schemas s ON s.schema_id = t.schema_id GROUP BY s.name")
+            return {_to_str(r[0]): int(r[1]) for r in cur.fetchall()}
+        except Exception:
+            return {}
+        finally:
+            cur.close()
 # ---------------------------------------------------------------- Oracle
 class OracleDriver(Driver):
     name = "oracle"
@@ -507,7 +541,15 @@ class OracleDriver(Driver):
         finally:
             cur.close()
 
-
+    def schema_table_counts(self, conn):
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT owner, count(*) FROM all_tables GROUP BY owner")
+            return {_to_str(r[0]): int(r[1]) for r in cur.fetchall()}
+        except Exception:
+            return {}
+        finally:
+            cur.close()
 # ---------------------------------------------------------------- 达梦 DM8
 class DamengDriver(Driver):
     name = "dameng"
@@ -587,7 +629,15 @@ class DamengDriver(Driver):
         finally:
             cur.close()
 
-
+    def schema_table_counts(self, conn):
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT owner, count(*) FROM ALL_TABLES GROUP BY owner")
+            return {_to_str(r[0]): int(r[1]) for r in cur.fetchall()}
+        except Exception:
+            return {}
+        finally:
+            cur.close()
 # ---------------------------------------------------------------- SQLite
 class SQLiteDriver(Driver):
     name = "sqlite"
@@ -644,12 +694,19 @@ class SQLiteDriver(Driver):
         finally:
             cur.close()
 
+    def schema_table_counts(self, conn):
+        out = {}
+        for s in self.schemas(conn):
+            try:
+                out[s] = len(self.tables(conn, s))
+            except Exception:
+                continue
+        return out
+
 
 def _quote_ident(v):
     """SQLite 的 schema 名做标识符转义（不含引号）。"""
     return '"' + str(v).replace('"', '""') + '"'
-
-
 # ---------------------------------------------------------------- 注册表
 _REGISTRY = {
     "postgresql": PostgresDriver,
