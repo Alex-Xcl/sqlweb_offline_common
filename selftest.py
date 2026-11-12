@@ -415,6 +415,26 @@ check("块式 DDL 整段只提交一次（不拆成两条碎片）",
 check("状态库权限 600（POSIX 生效，Windows 跳过）",
       os.name == "nt" or oct(os.stat(_sdb).st_mode)[-3:] == "600", oct(os.stat(_sdb).st_mode))
 
+# 子路径模式：带前缀通、不带前缀 404 且页面写明正确地址与 nginx 写法
+_old_base = sqlweb.AppState.cfg.get("base_path")
+sqlweb.AppState.cfg["base_path"] = "/sqlweb"
+try:
+    sc, hd, b = call("GET", "/sqlweb/login")
+    check("base_path 模式：带前缀能打开登录页", sc == 200, "got %s" % sc)
+    sc, hd, b = call("GET", "/login")
+    try:
+        _r = urllib.request.urlopen(BASE + "/login", timeout=10)
+        _sc2, _txt = _r.getcode(), _r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as _e:
+        _sc2, _txt = _e.code, _e.read().decode("utf-8", "replace")
+    check("base_path 模式：不带前缀 404 且提示正确路径与 proxy_pass",
+          sc == 404 and _sc2 == 404 and "访问前缀" in _txt and "结尾不要加斜杠" in _txt,
+          "got %s %s" % (sc, _txt[:150]))
+    sc, hd, b = call("GET", "/sqlweb/")
+    check("base_path 模式：带前缀根地址可跳转登录", sc in (200, 302), "got %s" % sc)
+finally:
+    sqlweb.AppState.cfg["base_path"] = _old_base
+
 print()
 print("=" * 52)
 print("通过 %d 项，失败 %d 项" % (PASS_N[0], FAIL_N[0]))

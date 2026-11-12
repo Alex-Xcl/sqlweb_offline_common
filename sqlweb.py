@@ -624,8 +624,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _raw(self, body, ctype="text/html; charset=utf-8"):
-        self.send_response(200)
+    def _raw(self, body, ctype="text/html; charset=utf-8", code=200):
+        self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
@@ -1092,11 +1092,36 @@ class Handler(BaseHTTPRequestHandler):
         AppState.logmsg("删除 Redis 实例 key=%s" % key)
         return self._json({"ok": True})
 
+    def _outside_base_hint(self, want_json=False):
+        """请求路径没带访问前缀时的 404——直接把正确路径和 nginx 写法说清楚。"""
+        b = self._base()
+        if want_json:
+            return self._json({"ok": False, "error": {
+                "message": "路径不在访问前缀 %s 内：请求 %s 少了前缀。nginx 反代时 "
+                           "proxy_pass 不要带结尾斜杠，否则前缀会被剥掉" %
+                           (b, self.path), "stage": "base_path"}}, 404)
+        body = ("<!doctype html><meta charset='utf-8'><title>404 路径不在访问前缀内</title>"
+                "<body style='font:14px/1.7 system-ui,sans-serif;max-width:760px;margin:60px auto;color:#1e293b'>"
+                "<h2>404 — 请求路径没带访问前缀</h2>"
+                "<p>本服务当前的访问前缀是 <b>%s</b>，而这次请求的路径是 <code>%s</code>。</p>"
+                "<p>直连就访问 <b>%s/login</b>。</p>"
+                "<p>经 nginx 反代时，<code>location %s/ { … }</code> 里的 "
+                "<code>proxy_pass</code> 要写成 <code>http://127.0.0.1:端口</code>"
+                "（<b>结尾不要加斜杠</b>），加了斜杠 nginx 会把 %s 剥掉，服务端就只收到 /login，必然 404。</p>"
+                "<p>反过来说：如果不想用子路径，把 base_path 设成空"
+                "（<code>python3 setconfig.py --set base_path=/</code>），"
+                "nginx 那边才用带斜杠的写法。</p>"
+                % (b, self.path, b, b, b)).encode("utf-8")
+        return self._raw(body, "text/html; charset=utf-8", 404)
+
     # ---- GET ----
     def do_GET(self):
         parsed = urlparse(self.path)
         path = self._strip_base(parsed.path)
         qs = parse_qs(parsed.query)
+
+        if path == "\x00__outside_base__":
+            return self._outside_base_hint()
 
         if path == "/login":
             return self._file(LOGIN_PATH)
@@ -1330,6 +1355,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = self._strip_base(parsed.path)
+
+        if path == "\x00__outside_base__":
+            return self._outside_base_hint(want_json=True)
 
         try:
             length = int(self.headers.get("Content-Length", 0) or 0)

@@ -538,7 +538,8 @@ python3 setconfig.py --get base_path      # 脚本里取值
 
 ```nginx
 location /sqlweb/ {
-    proxy_pass http://127.0.0.1:8899/;
+    # 注意：不要写成 http://127.0.0.1:8899/（结尾带斜杠会把 /sqlweb 剥掉，服务端只有 /login，直接 404）
+    proxy_pass http://127.0.0.1:8899;
     proxy_http_version 1.1;
 
     proxy_set_header Host              $host;
@@ -564,7 +565,16 @@ python3 setconfig.py --set base_path=/sqlweb
 
 起来后看启动日志里的 `访问前缀: /sqlweb`——这一行是判断代理配置有没有生效最快的方法；显示「（根路径，无前缀）」就是没读到。
 
-服务侧会：剥离前缀、把 `window.__BASE__` 注入前端、Cookie 的 `Path` 自动带上前缀。**不设 `base_path` 时一切按根路径工作**，两种部署方式都不用改代码。
+服务侧收到带前缀的路径后：剥掉前缀再路由、把 `window.__BASE__` 注入前端、Cookie 的 `Path` 自动带上前缀。**不设 `base_path` 时一切按根路径工作**，两种部署方式都不用改代码。
+
+两条规则必须成对，配错任何一条都是 404：
+
+| 服务端 `base_path` | nginx `proxy_pass` | 说明 |
+| --- | --- | --- |
+| `/sqlweb` | `http://127.0.0.1:8899`（**不带结尾斜杠**） | 原样把 `/sqlweb/...` 转给上游，服务端自己剥前缀 |
+| 空（根路径） | `http://127.0.0.1:8899/`（带结尾斜杠） | nginx 剥掉 `/sqlweb` 再转，上游只看到 `/login` |
+
+服务端还会拦一道：请求路径没带前缀时返回 404 并在页面上写明当前 `访问前缀`、正确地址以及 `proxy_pass` 该怎么写，不用再去翻 nginx 日志猜。
 
 > 权限提醒：`/var/lib/nginx/proxy` 与 `client_body` 临时目录的属主必须与 nginx worker 用户一致，否则大结果集会 500 / 413 Permission denied。
 
@@ -659,7 +669,7 @@ sqlweb_offline_common_common-1.3.0/
 | 登录 429 | 同一 IP 1 分钟内失败 5 次被限速，等 60 秒 |
 | 忘记管理员口令 | 停服后删掉 `sqlweb.db` 的 `users` 行（或整库），重启回到初始化模式并打印新令牌 |
 | 手改了 SQL / 状态库但界面没变 | 界面与接口一律以 `sqlweb.db` 为准；用 `sqlite3` 直接改库要重启服务才生效。界面里改则不用 |
-| nginx 反代 `/sqlweb/` 打不开（404 / 白屏 / 资源全丢） | 先看启动日志有没有 `访问前缀: /sqlweb`；没有就是 `base_path` 没读到——用 `python3 setconfig.py --set base_path=/sqlweb` 写状态库再重启，不要再改 `config.json`。另确认 `proxy_pass` 结尾带 `/`（`http://127.0.0.1:8899/`） |
+| nginx 反代 `/sqlweb/` 打不开（404 / 白屏 / 资源全丢） | 先看启动日志有没有 `访问前缀: /sqlweb`；没有就是 `base_path` 没读到——用 `python3 setconfig.py --set base_path=/sqlweb` 写状态库再重启，不要再改 `config.json`。另确认 `proxy_pass` 的斜杠跟模式配套：服务端 `base_path=/sqlweb` 时写 `http://127.0.0.1:8899`（不带斜杠），`base_path` 为空时才写 `http://127.0.0.1:8899/`。配反了必然 404，页面会提示当前前缀 |
 | `CREATE [OR REPLACE] PROCEDURE` / 触发器报语法错误、像是被截断 | 数据源是只读时先在【数据源管理】改成「可写」；仍报错就看错误里的语句片段——1.3.0 起程序块整段提交，若片段以 `END` 开头说明用了旧包，换新包即可 |
 | 改了 `config.json` 但端口 / 子路径没变 | 1.3.0 起配置真源是 `sqlweb.db`，`config.json` 只在首次启动导入一次。用 `python3 setconfig.py --set ...` 或界面改；启动日志会对残留的 `config.json` 打出提示 |
 | 达梦在 mac 上报 `ModuleNotFoundError: dmPython` | 装纯 Python 驱动：`pip install dm-pure`，服务会自动降级（3.7 上走 vendor 里的 `dmpy`） |
