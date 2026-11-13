@@ -19,6 +19,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import secrets
 import sys
 import threading
@@ -668,6 +669,122 @@ def run_query(cfg, ds, sql, max_rows, schema=None):
                                        "detail": None},
                 "elapsed_ms": round((time.time() - started) * 1000, 1),
                 "readonly": readonly}
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------- 过程 / 函数调用
+_NUM_LIT = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
+
+
+def _qident(v, driver):
+    """标识符引用：MySQL 用反引号，SQLServer 用方括号，其余双引号。"""
+    s = "" if v is None else str(v)
+    if driver == "mysql":
+        return "`" + s.replace("`", "``") + "`"
+    if driver == "sqlserver":
+        return "[" + s.replace("]", "]]") + "]"
+    return '"' + s.replace('"', '""') + '"'
+
+
+def sql_literal(v):
+    """弹窗里填的值转成 SQL 字面量：留空=NULL，'' 或 "" 表示空串，纯数字不加引号。"""
+    if v is None:
+        return "NULL"
+    s = str(v).strip()
+    if not s:
+        return "NULL"
+    if s in ("''", '""'):
+        return "''"
+    if _NUM_LIT.match(s):
+        return s
+    return drivers.quote_literal(s)
+
+
+def proc_call_sql(driver, schema, name, kind, args):
+    """拼调用语句。IN / INOUT 直接内联字面量，OUT 传 NULL（本工具不回显 OUT 参数）。
+    内联而不是绑定占位符，是因为达梦(?)、psycopg2(%s)、pymysql(%s)、oracledb(:1)
+    的占位符各不相同，内联一条语句在各驱动上都稳定。"""
+    drv = (driver or "").lower()
+    full = ((_qident(schema, drv) + ".") if schema else "") + _qident(name, drv)
+    ph, notes = [], []
+    for a in (args or []):
+        mode = (a.get("mode") or "IN").upper()
+        if mode == "OUT":
+            ph.append("NULL")
+            if a.get("name"):
+                notes.append("%s 是 OUT 参数，只传 NULL 占位，返回值不回显" % a["name"])
+        else:
+            ph.append(sql_literal(a.get("value")))
+    joiner = ", ".join(ph)
+    if (kind or "").lower() == "function":
+        if drv in ("dameng", "oracle"):
+            sql = 'SELECT %s(%s) AS "RETURN_VALUE" FROM DUAL' % (full, joiner)
+        else:
+            sql = 'SELECT %s(%s) AS "RETURN_VALUE"' % (full, joiner)
+    elif drv == "sqlserver":
+        sql = "EXEC %s %s" % (full, joiner)
+    else:
+        sql = "CALL %s(%s)" % (full, joiner)
+    return sql, notes
+
+
+def run_proc(cfg, ds, schema, name, kind, args, max_rows=200, database=None):
+    """执行一次过程/函数调用。只读数据源直接拒绝，但照样把 call_sql 交回去给人复制。"""
+    started = time.time()
+    driver = drivers.get_driver(ds.get("driver"))
+    readonly = bool(ds.get("readonly", cfg.get("readonly", True)))
+    if database:
+        ds = dict(ds, dbname=database)
+    sql, notes = proc_call_sql(driver.name, schema, name, kind, args)
+    if readonly:
+        return {"ok": False, "call_sql": sql, "notes": notes,
+                "error": {"message": "该数据源是只读，不执行过程/函数。确需执行请在"
+                                     "【数据源管理】把「只读」关掉；下面的调用语句可直接复制走。",
+                          "stage": "readonly"},
+                "elapsed_ms": 0.0}
+    conn = None
+    try:
+        conn = driver.connect(ds, timeout=cfg.get("connect_timeout", 10),
+                              statement_timeout_ms=cfg.get("statement_timeout_ms", 30000))
+        if schema:
+            _use_schema(conn, driver.name, schema)
+        cur = conn.cursor()
+        cur.execute(sql)
+        cols, rows, truncated = [], [], False
+        try:
+            desc = cur.description
+        except Exception:
+            desc = None
+        if desc:
+            cols = [str(d[0]) for d in desc]
+            fetched = cur.fetchall()
+            if len(fetched) > max_rows:
+                fetched = fetched[:max_rows]
+                truncated = True
+            rows = [[jsonable(x) for x in r] for r in fetched]
+        affected = None
+        try:
+            if cur.rowcount is not None and cur.rowcount >= 0:
+                affected = cur.rowcount
+        except Exception:
+            pass
+        try:
+            conn.commit()
+        except Exception:
+            pass
+        cur.close()
+        return {"ok": True, "call_sql": sql, "notes": notes, "columns": cols, "rows": rows,
+                "row_count": len(rows), "truncated": truncated, "affected": affected,
+                "elapsed_ms": round((time.time() - started) * 1000, 1)}
+    except Exception as e:
+        return {"ok": False, "call_sql": sql, "notes": notes,
+                "error": {"message": "%s: %s" % (type(e).__name__, e), "stage": "execute"},
+                "elapsed_ms": round((time.time() - started) * 1000, 1)}
     finally:
         if conn is not None:
             try:
@@ -1346,8 +1463,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not schema_in_scope(ds, schema):
                     return self._err("模式「%s」不在该数据源开放范围内" % schema, 403, "perm")
                 table = (qs.get("table") or [""])[0]
-                return self._json({"ok": True, "db": ds["key"],
-                                   "data": self._with_conn(ds, drv, lambda c: drv.columns(c, schema, table))})
+                # 驱动可以声明自己的列头（如达梦给「类型/可空/默认值/键」），
+                # 没声明就由前端按默认三列渲染，老驱动行为不变
+                out = {"ok": True, "db": ds["key"],
+                       "data": self._with_conn(ds, drv, lambda c: drv.columns(c, schema, table))}
+                head = getattr(drv, "columns_head", None)
+                if head:
+                    out["head"] = list(head)
+                return self._json(out)
             if path == "/api/search_tables":
                 # 跨模式搜表：只在「可见模式」白名单内扫，超时/超量就返回已找到的部分
                 kw = (qs.get("q") or [""])[0].strip()
@@ -1423,6 +1546,23 @@ class Handler(BaseHTTPRequestHandler):
                                    lambda: self._with_conn(ds, drv, lambda c: drv.catalog(c, schema)),
                                    ttl=300.0)
                 return self._json({"ok": True, "db": ds["key"], "data": data})
+
+            if path == "/api/proc_args":
+                # 过程 / 函数的入参清单：右击「执行」的弹窗照它生成参数行
+                schema = (qs.get("schema") or [""])[0]
+                name = (qs.get("name") or [""])[0]
+                kind = (qs.get("kind") or ["procedure"])[0].lower()
+                if not schema_in_scope(ds, schema):
+                    return self._err("模式「%s」不在该数据源开放范围内" % schema, 403, "perm")
+                if not name:
+                    return self._err("缺少对象名", 400, "param")
+                key = meta_key(ds, schema) + "|args|" + kind + "|" + name
+                data = meta_cached("proc_args", key, (qs.get("refresh") or ["0"])[0] == "1",
+                                   lambda: self._with_conn(
+                                       ds, drv, lambda c: drv.proc_args(c, schema, name, kind)),
+                                   ttl=60.0)
+                return self._json({"ok": True, "db": ds["key"], "schema": schema,
+                                   "name": name, "kind": kind, "data": data or []})
         except Exception as e:
             return self._err("%s: %s" % (type(e).__name__, e), stage="meta")
 
@@ -1604,6 +1744,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._post_users(payload)
             if path == "/api/query":
                 return self._post_query(payload)
+            if path == "/api/proc":
+                return self._post_proc(payload)
             if path == "/api/redis/cmd":
                 return self._post_redis(payload)
         except Exception as e:
@@ -1725,6 +1867,35 @@ class Handler(BaseHTTPRequestHandler):
         if schema and not schema_in_scope(ds, schema):
             return self._err("模式「%s」不在该数据源开放范围内" % schema, 403, "perm")
         result = run_query(AppState.cfg, ds, sql, max_rows, schema=schema)
+        result["db"] = ds.get("key")
+        return self._json(result)
+
+    def _post_proc(self, payload):
+        """执行一次过程 / 函数调用（右击「执行」）。只读数据源在 run_proc 里直接拦掉。"""
+        schema = (payload.get("schema") or "").strip() or None
+        name = (payload.get("name") or "").strip()
+        kind = (payload.get("kind") or "procedure").strip().lower()
+        if kind not in ("procedure", "function"):
+            kind = "procedure"
+        if not name:
+            return self._json({"ok": False, "error": {
+                "message": "缺少对象名", "stage": "param"}}, 400)
+        ds = get_db(AppState.cfg, payload.get("db"))
+        if not ds_allowed(self._cur_user(), ds.get("key")):
+            return self._forbid_ds(ds.get("key"))
+        if schema and not schema_in_scope(ds, schema):
+            return self._err("模式「%s」不在该数据源开放范围内" % schema, 403, "perm")
+        args = payload.get("args") or []
+        if not isinstance(args, list):
+            return self._json({"ok": False, "error": {
+                "message": "args 必须是数组", "stage": "param"}}, 400)
+        max_rows = payload.get("max_rows") or (AppState.cfg.get("max_rows", 1000))
+        try:
+            max_rows = max(1, min(int(max_rows), 20000))
+        except Exception:
+            max_rows = 1000
+        result = run_proc(AppState.cfg, ds, schema, name, kind, args, max_rows,
+                          database=payload.get("database"))
         result["db"] = ds.get("key")
         return self._json(result)
 

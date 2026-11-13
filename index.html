@@ -293,6 +293,40 @@
     border-radius:0 0 var(--r-shell) var(--r-shell);
   }
 
+  /* ---------- 对象树右键菜单 ---------- */
+  .ctx{
+    position:fixed; display:none; z-index:70; min-width:190px; padding:5px;
+    background:var(--bg); border:1px solid var(--border);
+    border-radius:var(--r-card); box-shadow:var(--sh-pop);
+  }
+  .ctx.show{display:block}
+  .ctx .mi{
+    padding:7px 10px; font-size:12.5px; color:var(--ink); cursor:pointer;
+    border-radius:var(--r-ctrl); white-space:nowrap;
+  }
+  .ctx .mi:hover{background:var(--brand-soft); color:var(--brand-ink)}
+  .ctx .mi.dim{color:var(--muted); cursor:default}
+  .ctx .mi.dim:hover{background:transparent; color:var(--muted)}
+  .ctx .sep{height:1px; background:var(--border); margin:4px 6px}
+
+  /* ---------- 执行过程 / 函数弹窗 ---------- */
+  .callrow{display:flex; align-items:center; gap:10px; margin-bottom:8px}
+  .callrow .pn{
+    width:136px; flex:none; font-family:var(--fm); font-size:12.5px; color:var(--ink);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .callrow .pt{width:116px; flex:none; font-size:11px; color:var(--muted); font-family:var(--fm)}
+  .callrow input{
+    flex:1; height:32px; border:1px solid var(--border-s); border-radius:var(--r-card);
+    padding:0 9px; font-size:12.5px; outline:none; background:var(--bg);
+    color:var(--ink); font-family:var(--fm);
+  }
+  .callrow input:focus{border-color:var(--brand); box-shadow:0 0 0 3px var(--brand-soft)}
+  .callprev{margin-top:14px}
+  .callprev .lbl{font-size:11.5px; color:var(--muted); margin-bottom:6px}
+  .callres{margin-top:14px; max-height:220px; overflow:auto;
+    border:1px solid var(--border); border-radius:var(--r-card)}
+
   .dslist{border:1px solid var(--border); border-radius:var(--r-card); overflow:hidden}
   .dsrow{
     display:flex; align-items:center; gap:10px; padding:10px 12px;
@@ -660,6 +694,32 @@
     <pre class="srcbox" id="srcPre"></pre>
   </div>
 </div>
+
+<div class="modal" id="modalCall">
+  <div class="box" style="max-width:760px">
+    <div class="mhead">
+      <h3 id="callTitle">执行</h3>
+      <div class="grow"></div>
+      <button class="btn" id="btnCallCopy" style="height:26px;font-size:11.5px">复制语句</button>
+      <button class="x" id="closeCall">×</button>
+    </div>
+    <div class="mbody">
+      <div id="callArgs"></div>
+      <div class="callprev">
+        <div class="lbl">将执行</div>
+        <pre class="srcbox" id="callSql" style="max-height:130px"></pre>
+      </div>
+      <div class="testbox" id="callMsg"></div>
+      <div class="callres" id="callRes"></div>
+    </div>
+    <div class="mfoot">
+      <button class="btn ghost" id="btnCallClose">关闭</button>
+      <button class="btn" id="btnCallRun">执行</button>
+    </div>
+  </div>
+</div>
+
+<div class="ctx" id="ctxMenu"></div>
 
 <div class="toast" id="toast"></div>
 <script>
@@ -1108,8 +1168,11 @@
                  '<span class="cnt">' + list.length + "</span></div>");
           if (!open) return;
           list.forEach(function (nm) {
-            var tip = s + "." + nm + "  ·  " + g.label +
-                      (g.k === "table" ? "（单击看结构，双击生成查询）" : "（单击看定义）");
+            var tip = s + "." + nm + "  ·  " + g.label + (g.k === "table"
+              ? "（单击看列结构，双击看建表语句，右击可查询 / 生成 INSERT）"
+              : ((g.k === "procedure" || g.k === "function")
+                 ? "（单击看定义，右击可执行）"
+                 : "（单击看定义，右击查看更多）"));
             h.push('<div class="tnode obj depth' + (depth + 2) + '" data-schema="' + esc(s) +
                    '" data-kind="' + g.k + '"' +
                    (g.k === "table" ? ' data-table="' + esc(nm) + '"' : ' data-obj="' + esc(nm) + '"') +
@@ -1187,10 +1250,10 @@
     }).then(function () { if (btn) btn.classList.remove("on"); });
   }
 
-  function toggleSchema(s) {
+  function toggleSchema(s, force) {
     state.currentSchema = s;
     var node = state.expanded[s];
-    if (node && !node.loading && node.objs) {
+    if (!force && node && !node.loading && node.objs) {
       delete state.expanded[s];
       renderTree();
       return;
@@ -1198,6 +1261,7 @@
     state.expanded[s] = { loading: true, objs: null, tables: [] };
     renderTree();
     var u = "/api/objects?db=" + enc(state.db) + "&schema=" + enc(s);
+    if (force) u += "&refresh=1";
     if (state.database) u += "&database=" + enc(state.database);
     apiGet(u).then(function (d) {
       if (d.ok) {
@@ -1233,9 +1297,18 @@
           return;
         }
         var rows = d.data || [];
-        state.lastResult = { ok: true, columns: ["列名", "类型", "可空"], rows: rows };
-        $("statInfo").innerHTML = "表 <b>" + esc(schema) + "." + esc(table) + "</b> 共 <b>" + rows.length + "</b> 列";
-        renderGrid(["列名", "类型", "可空"], rows);
+        var head = d.head || ["列名", "类型", "可空"];
+        state.lastResult = { ok: true, columns: head, rows: rows };
+        $("statInfo").innerHTML = "表 <b>" + esc(schema) + "." + esc(table) + "</b> 共 <b>" + rows.length +
+          '</b> 列 <a href="#" id="lnkTableDDL" style="color:#4aa3ff;text-decoration:none;margin-left:8px">查看建表语句</a>';
+        renderGrid(head, rows);
+        var lnk = $("lnkTableDDL");
+        if (lnk) {
+          lnk.addEventListener("click", function (ev) {
+            ev.preventDefault();
+            openSource(schema, table, "table");
+          });
+        }
       });
   }
 
@@ -1245,7 +1318,7 @@
     return String(v).replace(/\r/g, "").replace(/\n/g, " ↵ ");
   }
 
-  function renderGrid(cols, rows) {
+  function gridHtml(cols, rows) {
     // 每列数值的量级上限：按 log10 归一后给数字画一条长短条，
     // 一眼看出哪几行是大数。数字本身仍是可选中、可复制的真值。
     var maxLog = [];
@@ -1283,7 +1356,12 @@
       h.push("</tr>");
     }
     h.push("</tbody></table>");
-    $("rbody").innerHTML = h.join("");
+    return h.join("");
+  }
+
+  // 同一个表格渲染器：主结果区与「执行过程」弹窗共用
+  function renderGrid(cols, rows) {
+    $("rbody").innerHTML = gridHtml(cols, rows);
   }
 
   function renderResult(d) {
@@ -1848,6 +1926,7 @@
     if (sch) toggleSchema(sch);
   });
 
+  /* 双击 = 看结构 / 语句：表给列结构 + 建表语句，视图/过程/函数/序列/触发器给定义 */
   $("tree").addEventListener("dblclick", function (ev) {
     var el = ev.target;
     while (el && el !== this) {
@@ -1855,15 +1934,31 @@
       el = el.parentNode;
     }
     if (!el || el === this) return;
+    if (el.getAttribute("data-group")) return;
     var sch = el.getAttribute("data-schema");
+    var kind = el.getAttribute("data-kind");
     var tbl = el.getAttribute("data-table");
-    if (!tbl) return;
-    var ds = currentDs();
-    var q = quoteIdent(sch, ds && ds.driver) + "." + quoteIdent(tbl, ds && ds.driver);
-    var sql = "SELECT * FROM " + q + " LIMIT 100;";
-    $("sql").value = sql;
+    var obj = el.getAttribute("data-obj");
+    if (!sch) return;
     state.currentSchema = sch;
-    runSql();
+    if (tbl) {
+      loadColumns(sch, tbl);
+      openSource(sch, tbl, "table");
+      return;
+    }
+    if (obj && kind) openSource(sch, obj, kind);
+  });
+
+  /* 右击 = 操作菜单：表/视图查数据、生成 INSERT，过程/函数执行，其余看定义 */
+  $("tree").addEventListener("contextmenu", function (ev) {
+    var el = ev.target;
+    while (el && el !== this) {
+      if (el.classList && el.classList.contains("tnode")) break;
+      el = el.parentNode;
+    }
+    if (!el || el === this) return;
+    ev.preventDefault();
+    buildTreeCtx(el, ev.clientX, ev.clientY);
   });
 
   $("btnRun").addEventListener("click", runSql);
@@ -2670,6 +2765,285 @@
   function curSchema() {
     return state.currentSchema || (state.schemas && state.schemas[0]) || "";
   }
+
+  /* ============================================================
+     对象树交互：右键菜单 / 查询 / 生成 INSERT / 执行过程与函数
+     ============================================================ */
+  function copyText(txt) {
+    if (!txt) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(function () { toast("已复制：" + txt); })
+        .catch(function () { toast("复制失败，手动选中吧"); });
+    } else { toast("浏览器不允许直接复制，手动选中吧"); }
+  }
+
+  /* 各驱动取前 N 行的写法不同：SQLServer 用 TOP，Oracle 用 ROWNUM，其余 LIMIT */
+  function selectAllSql(schema, table, limit) {
+    var ds = currentDs(), drv = (ds && ds.driver) || "";
+    var q = quoteIdent(schema, drv) + "." + quoteIdent(table, drv);
+    if (drv === "sqlserver") return "SELECT TOP " + limit + " * FROM " + q + ";";
+    if (drv === "oracle") return "SELECT * FROM " + q + " WHERE ROWNUM <= " + limit + ";";
+    return "SELECT * FROM " + q + " LIMIT " + limit + ";";
+  }
+
+  function treeQuery(schema, table) {
+    if (!state.db) { toast("请先选择数据源"); return; }
+    state.currentSchema = schema;
+    $("sql").value = selectAllSql(schema, table, 100);
+    runSql();
+  }
+
+  /* 生成 INSERT：取该表 1 行真实数据生成完整语句；空表则用 ? 占位。
+     只把语句填进编辑器，不执行。 */
+  function treeInsert(schema, table) {
+    if (!state.db) { toast("请先选择数据源"); return; }
+    var ds = currentDs(), drv = (ds && ds.driver) || "";
+    var q = quoteIdent(schema, drv) + "." + quoteIdent(table, drv);
+    toast("正在取 1 行数据生成 INSERT 语句…");
+    apiPost("/api/query", {
+      db: state.db, sql: selectAllSql(schema, table, 1),
+      schema: schema, database: state.database || undefined, max_rows: 1
+    }).then(function (d) {
+      if (!d.ok) throw new Error(errMsg(d, "取数据失败"));
+      var cols = d.columns || [], rows = d.rows || [];
+      if (!cols.length) throw new Error("该表没有列信息");
+      function lit(v) {
+        if (v === null || v === undefined) return "NULL";
+        if (typeof v === "number") return String(v);
+        if (typeof v === "boolean") return v ? "1" : "0";
+        return "'" + String(v).replace(/'/g, "''") + "'";
+      }
+      var vals = cols.map(function (c, i) { return rows.length ? lit(rows[0][i]) : "?"; });
+      var txt = "INSERT INTO " + q + " (" + cols.map(function (c) {
+        return quoteIdent(c, drv);
+      }).join(", ") + ")\nVALUES (" + vals.join(", ") + ");";
+      state.currentSchema = schema;
+      $("sql").value = txt;
+      state.lastResult = null;
+      $("statInfo").innerHTML = "已生成 INSERT 语句 · " + esc(schema + "." + table) +
+        (rows.length ? "（按该表 1 行数据填充）" : "（空表，值用 ? 占位）") + " · 未执行";
+      $("rbody").innerHTML = '<div class="infobox">INSERT 语句已填到编辑器，按需修改后点「执行」。</div>';
+    }).catch(function (e) { toast(e.message); });
+  }
+
+  /* ---------- 执行过程 / 函数 ---------- */
+  var callState = null;
+
+  function sqlLit(v) {
+    if (v === null || v === undefined) return "NULL";
+    var s = String(v).trim();
+    if (!s) return "NULL";
+    if (s === "''" || s === '""') return "''";
+    if (/^[+-]?\d+(\.\d+)?$/.test(s)) return s;
+    return "'" + s.replace(/'/g, "''") + "'";
+  }
+
+  function callSqlText(c) {
+    var ds = currentDs(), drv = (ds && ds.driver) || "";
+    var full = (c.schema ? quoteIdent(c.schema, drv) + "." : "") + quoteIdent(c.name, drv);
+    var ph = (c.args || []).map(function (a) {
+      return (a.mode || "IN").toUpperCase() === "OUT" ? "NULL" : sqlLit(a.value);
+    }).join(", ");
+    if ((c.kind || "") === "function") {
+      return (drv === "oracle" || drv === "dameng")
+        ? 'SELECT ' + full + "(" + ph + ') AS "RETURN_VALUE" FROM DUAL'
+        : 'SELECT ' + full + "(" + ph + ') AS "RETURN_VALUE"';
+    }
+    if (drv === "sqlserver") return "EXEC " + full + (ph ? " " + ph : "");
+    return "CALL " + full + "(" + ph + ")";
+  }
+
+  function refreshCallPreview() {
+    if (!callState) return;
+    $("callSql").innerHTML = hlSQL(callSqlText(callState));
+  }
+
+  function closeCall() { $("modalCall").classList.remove("show"); }
+
+  function openCall(schema, name, kind) {
+    callState = { schema: schema, name: name, kind: kind, args: [] };
+    $("callTitle").textContent = (KIND_LABEL[kind] || kind) + "  ·  " + name +
+                                 (schema ? "  ·  " + schema : "");
+    $("callArgs").innerHTML = '<div class="dim" style="font-size:12px">读取参数…</div>';
+    $("callMsg").className = "testbox";
+    $("callMsg").textContent = "";
+    $("callRes").innerHTML = "";
+    $("btnCallRun").disabled = true;
+    $("modalCall").classList.add("show");
+    refreshCallPreview();
+    var u = "/api/proc_args?db=" + enc(state.db) + "&schema=" + enc(schema || "") +
+            "&name=" + enc(name) + "&kind=" + enc(kind || "procedure");
+    apiGet(u).then(function (d) {
+      if (!d.ok) throw new Error(errMsg(d, "读取参数失败"));
+      var list = d.data || [];
+      callState.args = list;
+      if (!list.length) {
+        $("callArgs").innerHTML = '<div class="dim" style="font-size:12px">该对象没有入参，直接执行即可</div>';
+      } else {
+        $("callArgs").innerHTML = list.map(function (a, i) {
+          var out = (a.mode || "IN").toUpperCase() === "OUT";
+          return '<div class="callrow"><span class="pn" title="' + esc(a.name) + '">' +
+            esc(a.name) + '</span><span class="pt">' + esc(a.type || "?") + " · " +
+            esc(a.mode || "IN") + '</span><input data-i="' + i + '"' +
+            (out ? ' placeholder="OUT 参数不用填" disabled' : ' placeholder="留空 = NULL"') +
+            "></div>";
+        }).join("");
+      }
+      $("btnCallRun").disabled = false;
+      refreshCallPreview();
+    }).catch(function (e) {
+      $("callArgs").innerHTML = '<div class="dim" style="font-size:12px;color:#b45309">' +
+        esc(e.message) + "（可在下方语句里手写参数）</div>";
+      $("btnCallRun").disabled = false;
+    });
+  }
+
+  $("callArgs").addEventListener("input", function (ev) {
+    var t = ev.target;
+    if (!t || !t.getAttribute || !t.getAttribute("data-i")) return;
+    var i = parseInt(t.getAttribute("data-i"), 10);
+    if (callState && callState.args && callState.args[i]) {
+      callState.args[i].value = t.value;
+      refreshCallPreview();
+    }
+  });
+
+  $("btnCallRun").addEventListener("click", function () {
+    if (!callState) return;
+    var c = callState;
+    $("btnCallRun").disabled = true;
+    $("callMsg").className = "testbox";
+    $("callMsg").textContent = "";
+    $("callRes").innerHTML = '<div class="dim" style="font-size:12px">执行中，达梦等纯 Python 驱动首次握手可能要十几秒…</div>';
+    apiPost("/api/proc", {
+      db: state.db, schema: c.schema, name: c.name, kind: c.kind,
+      args: (c.args || []).map(function (a) {
+        return { name: a.name, mode: a.mode, value: a.value };
+      }),
+      database: state.database || undefined
+    }).then(function (d) {
+      if (d.call_sql) $("callSql").innerHTML = hlSQL(d.call_sql);
+      if (!d.ok) {
+        $("callMsg").className = "testbox err";
+        $("callMsg").textContent = errMsg(d, "执行失败") +
+          ((d.notes || []).length ? "\n" + d.notes.join("\n") : "");
+        $("callRes").innerHTML = "";
+        return;
+      }
+      var cols = d.columns || [], rows = d.rows || [], notes = d.notes || [];
+      $("callMsg").className = "testbox ok";
+      $("callMsg").textContent = "执行成功" +
+        (d.affected != null && d.affected >= 0 ? "，影响 " + d.affected + " 行" : "") +
+        "，耗时 " + (d.elapsed_ms || 0) + " ms" +
+        (rows.length ? "，返回 " + rows.length + " 行" : "") +
+        (notes.length ? "\n" + notes.join("\n") : "");
+      $("callRes").innerHTML = cols.length ? gridHtml(cols, rows)
+        : '<div class="infobox" style="margin:0">该对象执行完成，没有返回结果集</div>';
+    }).catch(function (e) {
+      $("callMsg").className = "testbox err";
+      $("callMsg").textContent = e.message;
+    }).then(function () { $("btnCallRun").disabled = false; });
+  });
+
+  $("btnCallCopy").addEventListener("click", function () {
+    if (callState) copyText(callSqlText(callState));
+  });
+  $("closeCall").addEventListener("click", closeCall);
+  $("btnCallClose").addEventListener("click", closeCall);
+  $("modalCall").addEventListener("click", function (ev) {
+    if (ev.target === this) closeCall();
+  });
+
+  /* ---------- 右键菜单本体 ---------- */
+  function closeCtx() {
+    var m = $("ctxMenu");
+    if (m) m.classList.remove("show");
+  }
+
+  function showCtx(x, y, items) {
+    var m = $("ctxMenu"), h = [];
+    items.forEach(function (it, i) {
+      if (it === "-") { h.push('<div class="sep"></div>'); return; }
+      h.push('<div class="mi' + (it.dim ? " dim" : "") + '" data-i="' + i + '">' +
+             esc(it.label) + "</div>");
+    });
+    m.innerHTML = h.join("");
+    m.classList.add("show");
+    var w = m.offsetWidth, hh = m.offsetHeight;
+    m.style.left = Math.max(6, Math.min(x, window.innerWidth - w - 8)) + "px";
+    m.style.top = Math.max(6, Math.min(y, window.innerHeight - hh - 8)) + "px";
+    m.onclick = function (ev) {
+      var mi = ev.target;
+      if (!mi || !mi.classList || !mi.classList.contains("mi")) {
+        mi = (ev.target.closest ? ev.target.closest(".mi") : null);
+      }
+      if (!mi || mi.classList.contains("dim")) return;
+      var idx = parseInt(mi.getAttribute("data-i"), 10);
+      var fn = items[idx] && items[idx].run;
+      closeCtx();
+      if (fn) fn();
+    };
+  }
+
+  function buildTreeCtx(el, x, y) {
+    var grp = el.getAttribute("data-group");
+    var sch = el.getAttribute("data-schema");
+    var tbl = el.getAttribute("data-table");
+    var obj = el.getAttribute("data-obj");
+    var kind = el.getAttribute("data-kind");
+    var items = [];
+    function plain(label, run) { items.push({ label: label, run: run }); }
+    function sep() { items.push("-"); }
+
+    if (grp) {
+      var open = state.groupOpen[grp] !== false;
+      plain(open ? "收起这一组" : "展开这一组", function () {
+        state.groupOpen[grp] = !open;
+        renderTree();
+      });
+      return showCtx(x, y, items);
+    }
+
+    var full = sch ? (sch + "." + (tbl || obj || "")) : "";
+
+    if (tbl) {
+      plain("查询（前 100 行）", function () { treeQuery(sch, tbl); });
+      plain("生成 INSERT 语句", function () { treeInsert(sch, tbl); });
+      plain("查看建表语句", function () { openSource(sch, tbl, "table"); });
+      sep();
+      plain("复制表名", function () { copyText(full); });
+    } else if (kind === "view") {
+      plain("查询（前 100 行）", function () { treeQuery(sch, obj); });
+      plain("查看视图语句", function () { openSource(sch, obj, "view"); });
+      sep();
+      plain("复制视图名", function () { copyText(full); });
+    } else if (kind === "procedure" || kind === "function") {
+      plain("执行（填参数后运行）", function () { openCall(sch, obj, kind); });
+      plain(kind === "procedure" ? "查看过程语句" : "查看函数语句",
+            function () { openSource(sch, obj, kind); });
+      sep();
+      plain("复制名称", function () { copyText(full); });
+    } else if (kind === "sequence" || kind === "trigger") {
+      plain("查看定义", function () { openSource(sch, obj, kind); });
+      sep();
+      plain("复制名称", function () { copyText(full); });
+    } else if (sch) {
+      plain("刷新该模式", function () { toggleSchema(sch, true); });
+      sep();
+      plain("复制模式名", function () { copyText(sch); });
+    }
+    if (!items.length) return;
+    showCtx(x, y, items);
+  }
+
+  document.addEventListener("click", function (ev) {
+    var m = $("ctxMenu");
+    if (m && m.classList.contains("show") && !m.contains(ev.target)) closeCtx();
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape") closeCtx();
+  });
+  window.addEventListener("resize", closeCtx);
 
   /* ---------- 对象定义 ---------- */
   function openSource(schema, name, kind) {

@@ -566,6 +566,178 @@ check("小响应不压缩（无 Content-Encoding）",
       not (_hd_small.get("Content-Encoding") or ""), "CE=%s" % _hd_small.get("Content-Encoding"))
 
 print()
+print("=== 14. 达梦 DM8 字典拼装（离线，假连接） ===")
+import drivers as _drv
+
+
+class _DMCursor(object):
+    """按 SQL 关键片段返回预置行，模拟达梦 ALL_* 兼容视图。"""
+
+    def __init__(self, t):
+        self.t = t
+        self.rows = []
+
+    def execute(self, sql):
+        s = " ".join(sql.upper().split())
+        t = self.t
+        if "ALL_IND_COLUMNS" in s:
+            self.rows = t["ind_cols"]
+        elif "ALL_INDEXES" in s:
+            self.rows = t["idx"]
+        elif "ALL_CONS_COLUMNS" in s:
+            self.rows = t["cons_cols"]
+        elif "ALL_CONSTRAINTS" in s:
+            if "CONSTRAINT_TYPE IN ('P','U','R')" in s:
+                self.rows = t["kur"]
+            elif "CONSTRAINT_TYPE IN ('P','U')" in s:
+                self.rows = t["ku"]
+            else:
+                self.rows = t["ref"]
+        elif "SYS.SYSCOLUMNS" in s:
+            self.rows = t["ident"]
+        elif "SYS.SYSCOLUMNCOMMENTS" in s:
+            self.rows = t["colmemo"]
+        elif "ALL_TAB_COMMENTS" in s:
+            self.rows = t["tabmemo"]
+        elif "ALL_ARGUMENTS" in s:
+            self.rows = t["args"]
+        elif "ALL_TAB_COLUMNS" in s:
+            # 补全字典那条多选了 TABLE_NAME，两种形态分开喂数据
+            self.rows = t["cat"] if "TABLE_NAME, COLUMN_NAME" in s else t["cols"]
+        elif "ALL_OBJECTS" in s:
+            self.rows = t["objs"]
+        elif "ALL_SOURCE" in s:
+            self.rows = t["source"]
+        else:
+            self.rows = []
+
+    def fetchall(self):
+        return self.rows
+
+    def close(self):
+        pass
+
+
+class _DMConn(object):
+    def __init__(self, t):
+        self.t = t
+
+    def cursor(self):
+        return _DMCursor(self.t)
+
+
+_dm_t = {
+    # COLUMN_NAME, DATA_TYPE, DATA_LENGTH, DATA_PRECISION, DATA_SCALE, CHAR_LENGTH,
+    # CHAR_USED, NULLABLE, DATA_DEFAULT, COLUMN_ID
+    "cols": [("ID", "INT", "4", None, "0", "0", None, "N", None, "1"),
+             ("NAME", "VARCHAR", "200", None, "7", "50", "C", "N", None, "2"),
+             ("AMOUNT", "DECIMAL", "22", "12", "2", "0", None, "Y", "0", "3")],
+    "ident": [("0", "1")],                       # COLID 从 0 起：第 1 列是自增
+    "ku": [("PK_T1", "P", None, None, "INDEX33550001"),
+           ("UK_T1", "U", None, None, "INDEX33550002")],
+    "kur": [("PK_T1", "P", None, None, "INDEX33550001"),
+            ("UK_T1", "U", None, None, "INDEX33550002"),
+            ("FK_T1", "R", "APP", "PK_PARENT", "INDEX33550003")],
+    # 补全字典：TABLE_NAME, COLUMN_NAME, DATA_TYPE, DATA_LENGTH, DATA_PRECISION,
+    #           DATA_SCALE, CHAR_LENGTH, CHAR_USED
+    "cat": [("T1", "ID", "INT", "4", None, "0", "0", None),
+            ("T1", "NAME", "VARCHAR", "200", None, "7", "50", "C"),
+            ("T1", "AMOUNT", "DECIMAL", "22", "12", "2", "0", None)],
+    "cons_cols": [("PK_T1", "ID"), ("UK_T1", "NAME"), ("FK_T1", "ID")],
+    "ref": [("T_PARENT",)],
+    "idx": [("IDX_T1_NAME", "NONUNIQUE", "NORMAL"), ("INDEX33550001", "UNIQUE", "NORMAL")],
+    "ind_cols": [("IDX_T1_NAME", "NAME", "1", "ASC"), ("INDEX33550001", "ID", "1", "ASC")],
+    "tabmemo": [("订单表",)],
+    "colmemo": [("NAME", "名称")],
+    "objs": [("T1", "TABLE"), ("V1", "VIEW"), ("P1", "PROCEDURE"),
+             ("F1", "FUNCTION"), ("S1", "SEQUENCE"), ("TRG1", "TRIGGER")],
+    "source": [("CREATE OR REPLACE  TRIGGER APP.TRG1 BEFORE INSERT ON APP.T1",)],
+    # 参数：ARGUMENT_NAME, IN_OUT, DATA_TYPE, DATA_LENGTH, DATA_PRECISION, DATA_SCALE,
+    #       CHAR_LENGTH, CHAR_USED, DEFAULT_VALUE
+    "args": [("MSG", "IN", "VARCHAR", "100", None, None, "100", "C", ""),
+             ("V_RET", "OUT", "INT", "4", None, "0", "0", None, "")],
+}
+_dm_c = _DMConn(_dm_t)
+
+check("达梦：NULLABLE 语义 N=否 / Y=是",
+      _drv._dm_nullable("N") == "否" and _drv._dm_nullable("Y") == "是",
+      "%s / %s" % (_drv._dm_nullable("N"), _drv._dm_nullable("Y")))
+check("达梦：VARCHAR 按 CHAR_LENGTH + CHAR_USED 还原",
+      _drv._dm_type_text("VARCHAR", "200", None, "7", "50", "C") == "VARCHAR(50 CHAR)",
+      _drv._dm_type_text("VARCHAR", "200", None, "7", "50", "C"))
+check("达梦：NUMBER 无精度不带括号、TIMESTAMP 带精度",
+      _drv._dm_type_text("NUMBER", "22", None, None, "0", None) == "NUMBER"
+      and _drv._dm_type_text("TIMESTAMP", "8", None, "6", "0", None) == "TIMESTAMP(6)",
+      "%s / %s" % (_drv._dm_type_text("NUMBER", "22", None, None, "0", None),
+                   _drv._dm_type_text("TIMESTAMP", "8", None, "6", "0", None)))
+
+_dm_obj = _drv._objects_dm(_dm_c, "app")
+check("达梦：ALL_OBJECTS 六类对象分组正确",
+      all(len(_dm_obj[k]) == 1 for k in ("table", "view", "procedure", "function",
+                                         "sequence", "trigger")), str(_dm_obj))
+check("达梦：触发器定义走 ALL_SOURCE 的 TYPE='TRIG'",
+      "TRIGGER APP.TRG1" in (_drv._source_dm(_dm_c, "app", "trg1", "trigger") or ""),
+      str(_drv._source_dm(_dm_c, "app", "trg1", "trigger"))[:60])
+
+_dm_ddl = _drv._source_dm(_dm_c, "app", "t1", "table") or ""
+check("达梦：建表语句带 NOT NULL（不再被 _blank 吃掉）",
+      '"NAME" VARCHAR(50 CHAR) NOT NULL' in _dm_ddl, _dm_ddl.splitlines()[2] if _dm_ddl else "空")
+check("达梦：自增列还原成 IDENTITY(1,1)",
+      '"ID" INT IDENTITY(1,1)' in _dm_ddl, _dm_ddl.splitlines()[1] if _dm_ddl else "空")
+check("达梦：主键/唯一约束按表级 CONSTRAINT 输出",
+      'CONSTRAINT "PK_T1" PRIMARY KEY("ID")' in _dm_ddl
+      and 'CONSTRAINT "UK_T1" UNIQUE("NAME")' in _dm_ddl, _dm_ddl[:200])
+check("达梦：约束自带的系统索引不重复建成 CREATE INDEX",
+      'CREATE INDEX "IDX_T1_NAME"' in _dm_ddl and "INDEX33550001" not in _dm_ddl,
+      "含 IDX=%s 含系统索引=%s" % ('CREATE INDEX "IDX_T1_NAME"' in _dm_ddl,
+                                    "INDEX33550001" in _dm_ddl))
+check("达梦：表注释与列注释都拼进 DDL",
+      "COMMENT ON TABLE" in _dm_ddl and "订单表" in _dm_ddl
+      and 'COMMENT ON COLUMN "APP"."T1"."NAME"' in _dm_ddl and "名称" in _dm_ddl, _dm_ddl[-120:])
+
+_dm_cols = _drv._dm_column_list(_dm_c, "app", "t1")
+check("达梦：列结构五列（列名/类型/可空/默认值/键）",
+      len(_dm_cols) == 3 and _dm_cols[0] == ["ID", "INT", "否", "", "PK"]
+      and _dm_cols[1][2] == "否" and _dm_cols[1][4] == "UK"
+      and _dm_cols[2][3] == "0", str(_dm_cols))
+check("达梦：驱动声明了 columns_head，供接口回传列头",
+      tuple(_drv.DamengDriver.columns_head) == ("列名", "类型", "可空", "默认值", "键"),
+      str(getattr(_drv.DamengDriver, "columns_head", None)))
+_dm_cat = _drv._catalog_dm(_dm_c, "app")
+check("达梦：补全字典带长度类型",
+      len(_dm_cat) == 3 and _dm_cat[1][2] == "VARCHAR(50 CHAR)", str(_dm_cat))
+check("达梦：补全字典 limit 是表数上限、不是行数（否则大库只覆盖几十张表）",
+      len(_drv._catalog_dm(_dm_c, "app", 1)) == 3,
+      str(_drv._catalog_dm(_dm_c, "app", 1)))
+
+# --- 过程 / 函数参数与调用语句（右击「执行」那套）---
+_dm_args = _drv.DamengDriver().proc_args(_dm_c, "app", "f1", "function")
+check("达梦：ALL_ARGUMENTS 剔除函数返回值 V_RET",
+      len(_dm_args) == 1 and _dm_args[0]["name"] == "MSG",
+      str(_dm_args))
+check("达梦：参数类型还原 VARCHAR(100 CHAR)",
+      _dm_args[0]["type"] == "VARCHAR(100 CHAR)" and _dm_args[0]["mode"] == "IN",
+      "%s / %s" % (_dm_args[0]["type"], _dm_args[0]["mode"]))
+_dm_call, _dm_notes = sqlweb.proc_call_sql("dameng", "APP", "P1", "procedure",
+                                           [{"name": "MSG", "mode": "IN", "value": "hello"}])
+check("达梦：过程调用语句内联字面量",
+      _dm_call == 'CALL "APP"."P1"(\'hello\')', _dm_call)
+_dm_fcall, _ = sqlweb.proc_call_sql("dameng", "APP", "F1", "function",
+                                    [{"name": "A", "mode": "IN", "value": "1"},
+                                     {"name": "B", "mode": "IN", "value": "2"}])
+check("达梦：函数调用走 SELECT ... FROM DUAL",
+      _dm_fcall == 'SELECT "APP"."F1"(1, 2) AS "RETURN_VALUE" FROM DUAL', _dm_fcall)
+_dm_lit, _dm_lnotes = sqlweb.proc_call_sql("dameng", "APP", "P1", "procedure",
+                                           [{"name": "MSG", "mode": "IN", "value": "O'Brien"},
+                                            {"name": "O", "mode": "OUT", "value": ""}])
+check("达梦：字符串转义 + OUT 传 NULL 并回 note",
+      _dm_lit.endswith("('O''Brien', NULL)") and "O 是 OUT 参数" in (_dm_lnotes[0] if _dm_lnotes else ""),
+      "%s | %s" % (_dm_lit, _dm_lnotes))
+check("达梦：留空即 NULL、空串写作 ''",
+      sqlweb.sql_literal("") == "NULL" and sqlweb.sql_literal("''") == "''",
+      "%s / %s" % (sqlweb.sql_literal(""), sqlweb.sql_literal("''")))
+
+print()
 print("=" * 52)
 print("通过 %d 项，失败 %d 项" % (PASS_N[0], FAIL_N[0]))
 print("=" * 52)

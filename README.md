@@ -35,6 +35,7 @@
 - **Redis 面板**：Redis 既在"新增数据源 → 数据库类型"下拉里（选 Redis 就填主机 / 端口 / 库号 / ACL 用户名，测试连与保存都落到状态库 `sqlweb.db` 的 `redis` 表），也保留独立面板：概览（版本 / 内存 / 命中率 / keyspace）、SCAN 浏览 key（带类型与 TTL）、按 key 展开 string / hash / list / set / zset，以及命令框直接执行（只读实例按白名单放行）。管理员可在两处增删改 Redis 实例，并按账号分配可见实例
 - **表名搜索**：对象树顶部输入框，按表名模糊搜（不区分大小写）。已展开的库在本地即时过滤；停顿 350 ms 或回车则跨**所有可见模式**搜表，点结果直接看列、双击直接生成 `SELECT * FROM schema.table`。搜索严格受 `visible_schemas` 白名单约束，没权限的模式不会被搜到
 - **对象树按类型分组**（common-1.3.0 新增）：schema 展开后分成 **表 / 视图 / 存储过程 / 函数 / 序列 / 触发器** 六组，每组带数量，空组不显示；点视图、过程、函数直接看**定义（DDL）**
+- **对象树三套交互**（common-1.3.0 新增）：双击表看列结构 + 建表语句、双击视图/过程/函数看语句；右击表可「查询（前 100 行）/ 生成 INSERT 语句（取 1 行真实数据，只填不执行）/ 查看建表语句 / 复制表名」；右击过程与函数可「执行」——按参数清单弹窗列出参数名、类型、IN/OUT 与输入框，实时预览 `CALL` / `SELECT ... FROM DUAL` 语句，跑完直接出结果集。详见 5.10
 - **编辑器语法高亮 + 自动补全**（common-1.3.0 新增）：零外部依赖（不引 CodeMirror），关键字 / 字符串 / 数字 / 注释分色；输入时按"关键字 / 表名 / 别名.列名"给候选，Tab 或回车落地
 - **性能**（common-1.3.0 新增）：元数据 TTL 缓存（默认 120 s）+ 每数据源空闲连接复用（最多 2 条，取出先 `SELECT 1` 验活）+ >2 KB 的 JSON 响应 gzip
 - **子路径部署**：支持 nginx 反代到 `/sqlweb/` 这类前缀，不需要改端口
@@ -389,9 +390,7 @@ main ▾ 2
 ```
 
 - **空组不渲染**：SQLite 没有存储过程/函数，就只出现"表"和"视图"两组
-- 组标题可点开/收起（记住状态），点击对象名：
-  - 表 → 右侧出列结构（双击直接生成 `SELECT * FROM schema.table LIMIT 100` 并执行）
-  - 视图 / 存储过程 / 函数 / 触发器 → 弹窗显示定义，带语法高亮，可一键复制
+- 组标题可点开/收起（记住状态）；对象名的单击 / 双击 / 右击各有不同动作，完整矩阵见 **5.10**（双击看结构或语句、右击查询 / 生成 INSERT / 执行过程与函数）
 - 顶部"过滤表名…"同时过滤**所有类型**的对象名；跨模式搜索仍走 `/api/search_tables`（只搜表）
 - 各驱动的对象来源与定义来源：
 
@@ -467,6 +466,59 @@ HTTP 层同时核对：`/api/schemas` 只回白名单里的 `app`，`/api/object
 | 响应压缩 | 任何 `/api/*` JSON 超过 2 KB 且客户端支持时用 gzip（**发的是真 gzip 容器，头 `1f 8b`**；早期写成 zlib 容器会触发浏览器 `ERR_CONTENT_DECODING_FAILED`，见 11 节排障） | 补全字典 / 对象树这类响应通常压到 1/5 以内 |
 
 改数据源（保存 / 删除 / 设默认）时缓存与空闲连接一起清掉，避免换源后还看到旧 schema。
+
+### 5.10 对象树交互：单击 / 双击 / 右击（common-1.3.0 新增）
+
+左侧树不再是"点一下看列"，按对象类型给出三套动作：
+
+| 对象 | 单击 | 双击 | 右击 |
+| --- | --- | --- | --- |
+| 表 | 右侧出列结构（列名/类型/可空/默认值/键，带「查看建表语句」） | 列结构 + 建表语句弹窗（DDL 一键复制） | 查询（前 100 行）/ 生成 INSERT 语句 / 查看建表语句 / 复制表名 |
+| 视图 | 弹窗出视图定义 | 同左 | 查询（前 100 行）/ 查看视图语句 / 复制名称 |
+| 存储过程 | 弹窗出过程语句 | 同左 | 执行（填参数后运行）/ 查看过程语句 / 复制名称 |
+| 函数 | 弹窗出函数语句 | 同左 | 执行（填参数后运行）/ 查看函数语句 / 复制名称 |
+| 序列 / 触发器 | 弹窗出定义 | 同左 | 查看定义 / 复制名称 |
+| 分组标题（表/视图/…） | 展开、收起 | — | 展开 / 收起 |
+| 模式（schema） | 展开、收起 | — | 刷新该模式（强制绕过缓存）/ 复制模式名 |
+
+- **生成 INSERT**：取该表 1 行真实数据拼 `INSERT INTO "schema"."table" (...) VALUES (...)`，只填进编辑器、**不执行**；空表用 `?` 占位并在状态栏写明"空表，值用 ? 占位"。字符串走驱动方言的 `quote_literal`（`O'Brien` → `'O''Brien'`），纯数字不加引号，`NULL` 不加引号。
+- **执行过程 / 函数**：弹窗按参数清单生成"参数名 + 类型 · IN/OUT + 输入框"，下方实时预览将执行的语句；`OUT` 参数置灰（值按 `NULL` 传，并在返回里给一条 note）；结果区复用的表格渲染，有结果集（`SELECT ... FROM DUAL` / `CALL` 里带 `SELECT`）就出列，没有就提示"该对象执行完成，没有返回结果集"。
+- **只读数据源**：执行被拦下（`stage=readonly`），但仍然把可复制的 `CALL ...` 语句回给前端 —— 只读环境里也能拿到一条准确语句去 DBA 那边跑。
+- 右击菜单贴鼠标出现，超出视口自动翻边；点空白、Esc、窗口 resize 都会收起。
+
+**参数探测（六驱动）**：`drivers.proc_args(conn, schema, name, kind)`
+
+| 驱动 | 来源 | 关键处理 |
+| --- | --- | --- |
+| Oracle / 达梦 | `ALL_ARGUMENTS`（`PACKAGE_NAME IS NULL`，按 `SEQUENCE` 排） | 函数返回值混在参数里（达梦 `ARGUMENT_NAME='V_RET'`、Oracle 名为空），必须剔除，否则调用凭空多一个参数；达梦 `POSITION` 从 0 起，排序不能用它 |
+| PostgreSQL | `pg_proc` + `proargnames` / `proargmodes` / `COALESCE(proallargtypes, proargtypes)` + `format_type` | psycopg2 给 list、pg8000 给 `{a,b}` 文本，两种都接住 |
+| MySQL / MariaDB | `information_schema.PARAMETERS` | 过程/函数共用 |
+| SQL Server | `sys.parameters` + `TYPE_NAME` | 过程/函数共用 |
+| SQLite | — | 返回空 |
+
+**语句生成**：`sqlweb.proc_call_sql(driver, schema, name, kind, args)` —— 参数**内联成字面量**而不是占位符（达梦 `?`、psycopg2 `%s`、pymysql `%s`、oracledb `:1` 各不相同，统一占位符反而处处踩坑）。函数在达梦/Oracle 用 `SELECT "S"."F"(...) AS "RETURN_VALUE" FROM DUAL`，SQL Server 用 `EXEC`，其余 `CALL`。
+
+**接口**（与表/列同一套 `visible_schemas` 白名单，越界 403）：
+
+| 接口 | 作用 |
+| --- | --- |
+| `GET /api/proc_args?schema=&name=&kind=` | 参数清单 `[{name, mode, type, default}]`，缓存 60 s，`&refresh=1` 重查 |
+| `POST /api/proc` | 体 `{db, schema, name, kind, args:[{name, mode, value}], max_rows}`；返回 `{ok, call_sql, columns, rows, affected, notes, elapsed_ms}`，只读源返回 `stage=readonly` 并附 `call_sql` |
+
+**达梦真机实测（DM8 8.4 企业版，172.168.3.122:5236，schema `SQLWEB_DMTEST`）**
+
+| 对象 | 参数探测 | 生成的语句 | 执行结果 |
+| --- | --- | --- | --- |
+| `P_NOOP(MSG VARCHAR(100))` | `[{name:'MSG', mode:'IN', type:'VARCHAR(100)'}]` | `CALL "SQLWEB_DMTEST"."P_NOOP"('hello')` | 成功，无结果集，约 10 s |
+| `F_ADD(A INT, B INT)` | `[A INT, B INT]`（`V_RET` 已剔除） | `SELECT "SQLWEB_DMTEST"."F_ADD"(1, 2) AS "RETURN_VALUE" FROM DUAL` | 返回 `[[3]]` |
+| `P_ROWS`（无参，内部 `SELECT`） | `[]`（弹窗提示"该对象没有入参，直接执行即可"） | `CALL "SQLWEB_DMTEST"."P_ROWS"()` | 返回 `K/V` 各一列、`A/1` 一行 |
+
+达梦另有两处与 Oracle 的差异已在这版里吃掉：
+
+1. **schema 列表要合并两个来源**。达梦的 `CREATE SCHEMA` 只建模式对象、不建用户，`DBA_USERS` / `ALL_USERS` 里根本没有它 —— 只查用户表会让"独立模式"整块从树上消失。现在三源合并（`DBA_USERS` + `ALL_USERS` + `SYS.SYSOBJECTS WHERE TYPE$='SCH'`）并去重，系统模式（`SYS` / `SYSDBA` / `SYSAUDITOR` / `SYSSSO` / `CTISYS` / `SYSJOB` / `GUEST`）排在业务模式之后。
+2. **业务账号的字典权限边界**：`EALEPM` 这类业务账号只有 `CREATE SESSION` / `RESOURCE`，读任何 `SYS.*` 一律 `-5504`，只能用 `ALL_*` 兼容视图；`TABLEDEF()` 与 `DBMS_METADATA.GET_DDL()` 在其下返回空（表 DDL 是本工具按字典拼的）；`ALL_TAB_COLUMNS` 看不到自增列，要看 `SYS.SYSCOLUMNS.INFO2`（要 DBA）；`ALL_TABLES.NUM_ROWS` 全 NULL。用一个 DBA 账号建数据源，自增列、列注释、行数才齐全。
+
+> **为什么业务库里建不了存储过程**：`CREATE OR REPLACE PROCEDURE EALEPM.PROC_x(...)` 在 `EALEPM` 账号下报错，不是工具拦的，是账号没有 `CREATE PROCEDURE` 权限（该账号只有 `CREATE SESSION` / `RESOURCE`）。要么让 DBA 执行 `GRANT CREATE PROCEDURE TO EALEPM;`，要么用 `SYSDBA` 建完再 `GRANT EXECUTE` 给业务账号。工具侧对"能建的账号"已经实测通过（`SQLWEB_DMTEST` 下的过程/函数都是由本工具执行 DDL 建的）。
 
 ---
 

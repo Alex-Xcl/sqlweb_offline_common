@@ -556,6 +556,8 @@ class DamengDriver(Driver):
     label = "达梦 DM8"
     default_port = 5236
     modules = ("dmPython", "dmpy")
+    # 达梦的列结构能给出类型长度、默认值和键标记，界面上按 5 列展示
+    columns_head = ("列名", "类型", "可空", "默认值", "键")
 
     def _install_hint(self):
         return ("包内 wheels/ 带的是纯 Python 驱动 dm-pure（导入名 dmpy），"
@@ -592,8 +594,14 @@ class DamengDriver(Driver):
             cur.close()
 
     def schemas(self, conn):
-        """优先 DBA_USERS，退回 ALL_USERS；再退回库内 schema 对象。"""
+        """三源合并：DBA_USERS / ALL_USERS（登录名） + SYSOBJECTS 里的独立模式。
+
+        达梦的 CREATE SCHEMA 只建模式对象、不建用户，所以只查 DBA_USERS 会漏掉
+        「独立模式」——比如用 SYSDBA 建的 SQLWEB_DMTEST 在 DBA_USERS 里根本没有，
+        树里就整块消失。系统模式排在业务模式之后，免得一进树先看到一堆 SYS*。
+        """
         cur = conn.cursor()
+        out, seen = [], set()
         try:
             for sql in ("SELECT USERNAME FROM DBA_USERS ORDER BY 1",
                         "SELECT USERNAME FROM ALL_USERS ORDER BY 1",
@@ -601,11 +609,13 @@ class DamengDriver(Driver):
                 try:
                     cur.execute(sql)
                     rows = [_to_str(r[0]) for r in cur.fetchall()]
-                    if rows:
-                        return rows
                 except Exception:
                     continue
-            return []
+                for r in rows:
+                    if r and r not in seen:
+                        seen.add(r)
+                        out.append(r)
+            return sorted(out, key=lambda s: (_dm_sys_schema(s), s.upper()))
         finally:
             cur.close()
 
@@ -620,14 +630,8 @@ class DamengDriver(Driver):
             cur.close()
 
     def columns(self, conn, schema, table):
-        cur = conn.cursor()
-        try:
-            cur.execute("SELECT COLUMN_NAME, DATA_TYPE, NULLABLE FROM ALL_TAB_COLUMNS "
-                        "WHERE OWNER=%s AND TABLE_NAME=%s ORDER BY COLUMN_ID"
-                        % (quote_literal(schema.upper()), quote_literal(table.upper())))
-            return [[_to_str(r[0]), _to_str(r[1]), _blank(r[2])] for r in cur.fetchall()]
-        finally:
-            cur.close()
+        # 达梦：类型带长度、可空、默认值、主键/唯一标记（见模块内 _dm_column_list）
+        return _dm_column_list(conn, schema, table)
 
     def schema_table_counts(self, conn):
         cur = conn.cursor()
@@ -1007,6 +1011,375 @@ def _catalog_ora(conn, schema, limit=400):
                     "WHERE owner = %s ORDER BY table_name, column_id" % quote_literal(schema))
 
 
+# ---- 达梦 DM8（以下实现全部基于 DM8 8.4 企业版实机核对）----
+# 实测结论（业务账号 EALEPM / EALCONFIG，非 DBA）：
+#   1) SYS.SYSOBJECTS / SYS.SYSCOLUMNS / SYS.SYSTEXTS / SYS.SYSCOLUMNCOMMENTS 一律 -5504 无权限，
+#      只能用 ALL_* 兼容视图；凡是 SYS 路径都放在 try 里，DBA 数据源才生效；
+#   2) ALL_OBJECTS 能返回 TABLE/VIEW/PROCEDURE/FUNCTION/SEQUENCE/TRIGGER/PACKAGE，
+#      且天然只含"有权限"的对象，所以左侧不会出现无权访问的对象；
+#   3) 触发器源码在 ALL_SOURCE 里 TYPE='TRIG'（不是 TRIGGER），整段单行返回；
+#   4) ALL_SEQUENCES 的属主列是 SEQUENCE_OWNER，ALL_IND_COLUMNS 的是 INDEX_OWNER，
+#      直接用 OWNER 会报"无效的列名"；
+#   5) ALL_TAB_COLUMNS 没有 IDENTITY_COLUMN：自增只能读 SYS.SYSCOLUMNS.INFO2 的 BIT(0)（需 DBA）；
+#      列注释在 ALL_COL_COMMENTS 里取不到，只在 SYS.SYSCOLUMNCOMMENTS（需 DBA）；
+#   6) TABLEDEF() 与 DBMS_METADATA.GET_DDL() 在该版本都返回空，表 DDL 只能按字典拼装。
+_DM_KIND = {"TABLE": "table", "VIEW": "view", "PROCEDURE": "procedure",
+            "FUNCTION": "function", "SEQUENCE": "sequence", "TRIGGER": "trigger"}
+_DM_SRC_TYPE = {"procedure": "PROCEDURE", "function": "FUNCTION",
+                "trigger": "TRIG", "package": "PACKAGE"}
+_DM_CHAR_TYPES = ("VARCHAR", "VARCHAR2", "CHAR", "NVARCHAR", "NCHAR", "VARBINARY", "BINARY")
+_DM_NUM_TYPES = ("DECIMAL", "NUMERIC", "NUMBER")
+_DM_SYS_SCHEMAS = {"SYS", "SYSDBA", "SYSAUDITOR", "SYSSSO", "CTISYS", "SYSJOB",
+                   "GUEST", "SYSTEM", "SYSDBA_JOB", "BAKER"}
+
+
+def _dm_up(v):
+    return _to_str(v).upper()
+
+
+def _dm_int(v):
+    try:
+        return int(v)
+    except Exception:
+        return 0
+
+
+def _dm_sys_schema(name):
+    """系统自带的模式：排序时压到业务模式后面。"""
+    return 0 if _dm_up(name) not in _DM_SYS_SCHEMAS else 1
+
+
+def _dm_nullable(v):
+    """ALL_TAB_COLUMNS.NULLABLE：Y 可空 / N 不可空。
+    注意不能用通用 _blank()：它把 N 当成"是"、Y 当成"否"，对达梦正好反了，
+    而且会把默认值里的字符串 'N'/'NULL' 也误改成中文。"""
+    k = _dm_up(v)
+    if k == "Y":
+        return "是"
+    if k == "N":
+        return "否"
+    return _to_str(v)
+
+
+def _dm_type_text(dt, length, prec, scale, clen, cused):
+    """把 ALL_TAB_COLUMNS 的类型字段还原成 DDL 写法。
+    实测：VARCHAR(50 CHAR) 存成 DATA_LENGTH=200 / CHAR_LENGTH=50 / CHAR_USED='C'；
+    NUMBER(22) 的 DATA_PRECISION 与 DATA_SCALE 都是空；DECIMAL(12,2) 两者都有值。"""
+    t = _dm_up(dt)
+    if not t:
+        return ""
+    if t in _DM_CHAR_TYPES:
+        n = _dm_int(clen) or _dm_int(length)
+        if not n:
+            return t
+        return "%s(%d CHAR)" % (t, n) if _dm_up(cused) == "C" else "%s(%d)" % (t, n)
+    if t in _DM_NUM_TYPES:
+        p = _dm_int(prec) if prec is not None else 0
+        s = _dm_int(scale) if scale is not None else None
+        if not p:
+            return t
+        return "%s(%d,%d)" % (t, p, s or 0) if s is not None else "%s(%d)" % (t, p)
+    if t in ("TIMESTAMP", "TIME"):
+        sc = _dm_int(scale) if scale is not None else -1
+        return "%s(%d)" % (t, sc) if 0 <= sc <= 9 else t
+    return t
+
+
+def _dm_identity_cols(conn, schema, table):
+    """自增列集合（列名）。达梦只在 SYS.SYSCOLUMNS.INFO2 的 BIT(0) 标记，需要 DBA 权限。"""
+    out = set()
+    try:
+        rows = _q(conn, "SELECT COLID, INFO2 FROM SYS.SYSCOLUMNS WHERE ID=("
+                        "SELECT ID FROM SYS.SYSOBJECTS WHERE NAME=%s AND SCHID=("
+                        "SELECT ID FROM SYS.SYSOBJECTS WHERE NAME=%s AND TYPE$='SCH'))"
+                        % (quote_literal(_dm_up(table)), quote_literal(_dm_up(schema))))
+        for colid, info2 in rows:
+            if _dm_int(info2) & 1:
+                out.add(_dm_int(colid) + 1)      # SYSCOLUMNS 的 COLID 从 0 起，ALL_TAB_COLUMNS 的 COLUMN_ID 从 1 起
+    except Exception:
+        pass
+    return out
+
+
+def _dm_key_cols(conn, schema, table):
+    """列名 -> ['PK'] / ['UK']，供列结构面板展示键标记。"""
+    out = {}
+    s, t = _dm_up(schema), _dm_up(table)
+    try:
+        cons = _q(conn, "SELECT CONSTRAINT_NAME, CONSTRAINT_TYPE FROM ALL_CONSTRAINTS "
+                        "WHERE OWNER=%s AND TABLE_NAME=%s AND CONSTRAINT_TYPE IN ('P','U')"
+                        % (quote_literal(s), quote_literal(t)))
+        names = dict((_to_str(r[0]), _to_str(r[1])) for r in cons)
+        if names:
+            for cn, col in _q(conn, "SELECT CONSTRAINT_NAME, COLUMN_NAME FROM ALL_CONS_COLUMNS "
+                                    "WHERE OWNER=%s AND TABLE_NAME=%s ORDER BY CONSTRAINT_NAME, POSITION"
+                                    % (quote_literal(s), quote_literal(t))):
+                ctype = names.get(_to_str(cn))
+                if ctype:
+                    out.setdefault(_to_str(col), []).append("PK" if ctype == "P" else "UK")
+    except Exception:
+        pass
+    return out
+
+
+def _dm_column_list(conn, schema, table):
+    """列结构（增强版）：列名 / 类型(含长度) / 可空 / 默认值 / 键。"""
+    s, t = _dm_up(schema), _dm_up(table)
+    rows = _q(conn, "SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, DATA_PRECISION, DATA_SCALE, "
+                    "CHAR_LENGTH, CHAR_USED, NULLABLE, DATA_DEFAULT FROM ALL_TAB_COLUMNS "
+                    "WHERE OWNER=%s AND TABLE_NAME=%s ORDER BY COLUMN_ID"
+                    % (quote_literal(s), quote_literal(t)))
+    keys = _dm_key_cols(conn, s, t)
+    return [[_to_str(r[0]), _dm_type_text(r[1], r[2], r[3], r[4], r[5], r[6]),
+             _dm_nullable(r[7]), _to_str(r[8]), "/".join(keys.get(_to_str(r[0]), []))]
+            for r in rows]
+
+
+def _dm_column_comments(conn, schema, table):
+    """列注释：ALL_COL_COMMENTS 在达梦取不到值，退回 SYS.SYSCOLUMNCOMMENTS（DBA 才行）。"""
+    out = {}
+    try:
+        rows = _q(conn, "SELECT COLNAME, COMMENT$ FROM SYS.SYSCOLUMNCOMMENTS "
+                        "WHERE SCHNAME=%s AND TVNAME=%s"
+                        % (quote_literal(_dm_up(schema)), quote_literal(_dm_up(table))))
+        for c, memo in rows:
+            if _to_str(memo):
+                out[_to_str(c)] = _to_str(memo)
+    except Exception:
+        pass
+    return out
+
+
+def _dm_ident_list(cols):
+    return ", ".join('"%s"' % c for c in cols)
+
+
+def _dm_table_ddl(conn, schema, table):
+    """按字典拼出建表语句（达梦没有可用的 TABLEDEF/GET_DDL）。
+    列 + 主键/唯一/外键 + 普通索引 + 表/列注释；自增列在 DBA 数据源下才还原。"""
+    s, t = _dm_up(schema), _dm_up(table)
+    try:
+        cols = _q(conn, "SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, DATA_PRECISION, DATA_SCALE, "
+                        "CHAR_LENGTH, CHAR_USED, NULLABLE, DATA_DEFAULT, COLUMN_ID FROM ALL_TAB_COLUMNS "
+                        "WHERE OWNER=%s AND TABLE_NAME=%s ORDER BY COLUMN_ID"
+                        % (quote_literal(s), quote_literal(t)))
+    except Exception:
+        cols = []
+    if not cols:
+        return ""
+    ident = _dm_identity_cols(conn, s, t)
+
+    # 约束（PK/UK/FK）
+    pk_name, pk_cols, uk_items, fk_items, cons_idx = None, [], [], [], set()
+    try:
+        rows = _q(conn, "SELECT CONSTRAINT_NAME, CONSTRAINT_TYPE, R_OWNER, R_CONSTRAINT_NAME, INDEX_NAME "
+                        "FROM ALL_CONSTRAINTS WHERE OWNER=%s AND TABLE_NAME=%s "
+                        "AND CONSTRAINT_TYPE IN ('P','U','R') ORDER BY CONSTRAINT_TYPE, CONSTRAINT_NAME"
+                        % (quote_literal(s), quote_literal(t)))
+    except Exception:
+        rows = []
+    cons_cols = {}
+    if rows:
+        try:
+            for cn, col in _q(conn, "SELECT CONSTRAINT_NAME, COLUMN_NAME FROM ALL_CONS_COLUMNS "
+                                    "WHERE OWNER=%s AND TABLE_NAME=%s ORDER BY CONSTRAINT_NAME, POSITION"
+                                    % (quote_literal(s), quote_literal(t))):
+                cons_cols.setdefault(_to_str(cn), []).append(_to_str(col))
+        except Exception:
+            pass
+    for cn, ctype, rowner, rcons, iname in rows:
+        cn, ctype = _to_str(cn), _to_str(ctype)
+        if iname:
+            cons_idx.add(_to_str(iname))
+        if ctype == "P":
+            pk_name, pk_cols = cn, cons_cols.get(cn, [])
+        elif ctype == "U":
+            uk_items.append((cn, cons_cols.get(cn, [])))
+        elif ctype == "R":
+            ref_t, ref_c, ref_name = "", [], ""
+            try:
+                rr = _q(conn, "SELECT TABLE_NAME FROM ALL_CONSTRAINTS WHERE OWNER=%s AND CONSTRAINT_NAME=%s"
+                        % (quote_literal(_dm_up(rowner) or s), quote_literal(_to_str(rcons))))
+                ref_t = _to_str(rr[0][0]) if rr else ""
+                if ref_t:
+                    rc = _q(conn, "SELECT COLUMN_NAME FROM ALL_CONS_COLUMNS WHERE OWNER=%s AND TABLE_NAME=%s "
+                                  "AND CONSTRAINT_NAME=%s ORDER BY POSITION"
+                            % (quote_literal(_dm_up(rowner) or s), quote_literal(ref_t),
+                               quote_literal(_to_str(rcons))))
+                    ref_c = [_to_str(x[0]) for x in rc]
+            except Exception:
+                pass
+            fk_items.append((cn, cons_cols.get(cn, []), ref_t, ref_c))
+
+    lines = []
+    for r in cols:
+        name = _to_str(r[0])
+        typ = _dm_type_text(r[1], r[2], r[3], r[4], r[5], r[6])
+        if _dm_int(r[9]) in ident:
+            typ += " IDENTITY(1,1)"
+        line = '    "%s" %s' % (name, typ)
+        if _dm_up(r[7]) == "N":
+            line += " NOT NULL"
+        if _to_str(r[8]):
+            line += " DEFAULT %s" % _to_str(r[8])
+        lines.append(line)
+    if pk_cols:
+        lines.append('    CONSTRAINT "%s" PRIMARY KEY(%s)' % (pk_name, _dm_ident_list(pk_cols)))
+    for cn, c in uk_items:
+        if c:
+            lines.append('    CONSTRAINT "%s" UNIQUE(%s)' % (cn, _dm_ident_list(c)))
+    for cn, c, ref_t, ref_c in fk_items:
+        if c and ref_t:
+            # 外键必须带模式名：达梦对不带模式名的表按当前会话模式解析，换个账号执行就会找不到表
+            ref = '"%s"."%s"' % (_dm_up(rowner) or s, ref_t)
+            if ref_c:
+                ref += "(%s)" % _dm_ident_list(ref_c)
+            lines.append('    CONSTRAINT "%s" FOREIGN KEY(%s) REFERENCES %s' % (cn, _dm_ident_list(c), ref))
+
+    ddl = 'CREATE TABLE "%s"."%s" (\n%s\n);' % (s, t, ",\n".join(lines))
+
+    # 普通索引（跳过约束自带的系统索引，INDEX3355xxxx 是达梦自动生成的约束/聚簇索引）
+    try:
+        idx = _q(conn, "SELECT INDEX_NAME, UNIQUENESS, INDEX_TYPE FROM ALL_INDEXES "
+                       "WHERE OWNER=%s AND TABLE_NAME=%s ORDER BY INDEX_NAME"
+                       % (quote_literal(s), quote_literal(t)))
+        idx_cols = {}
+        if idx:
+            for iname, cname, pos, desc in _q(conn, "SELECT INDEX_NAME, COLUMN_NAME, COLUMN_POSITION, DESCEND "
+                                                    "FROM ALL_IND_COLUMNS WHERE INDEX_OWNER=%s AND TABLE_NAME=%s "
+                                                    "ORDER BY INDEX_NAME, COLUMN_POSITION"
+                                                    % (quote_literal(s), quote_literal(t))):
+                idx_cols.setdefault(_to_str(iname), []).append(_to_str(cname))
+        for iname, uniq, itype in idx:
+            iname, itype = _to_str(iname), _dm_up(itype)
+            if iname in cons_idx or itype in ("CLUSTER", "VIRTUAL") or not idx_cols.get(iname):
+                continue
+            ddl += "\nCREATE %sINDEX \"%s\" ON \"%s\".\"%s\"(%s);" % (
+                "UNIQUE " if _dm_up(uniq) == "UNIQUE" else "", iname, s, t,
+                _dm_ident_list(idx_cols[iname]))
+    except Exception:
+        pass
+
+    # 注释
+    try:
+        memo = _q(conn, "SELECT COMMENTS FROM ALL_TAB_COMMENTS WHERE OWNER=%s AND TABLE_NAME=%s"
+                 % (quote_literal(s), quote_literal(t)))
+        if memo and _to_str(memo[0][0]):
+            ddl += '\nCOMMENT ON TABLE "%s"."%s" IS %s;' % (s, t, quote_literal(_to_str(memo[0][0])))
+    except Exception:
+        pass
+    for cname, memo in sorted(_dm_column_comments(conn, s, t).items()):
+        ddl += '\nCOMMENT ON COLUMN "%s"."%s"."%s" IS %s;' % (s, t, cname, quote_literal(memo))
+    return ddl
+
+
+def _dm_sequence_ddl(conn, schema, name):
+    s, n = _dm_up(schema), _dm_up(name)
+    try:
+        rows = _q(conn, "SELECT MIN_VALUE, MAX_VALUE, INCREMENT_BY, CYCLE_FLAG, CACHE_SIZE, LAST_NUMBER "
+                        "FROM ALL_SEQUENCES WHERE SEQUENCE_OWNER=%s AND SEQUENCE_NAME=%s"
+                        % (quote_literal(s), quote_literal(n)))
+    except Exception:
+        rows = []
+    if not rows:
+        return ""
+    r = rows[0]
+    parts = ['CREATE SEQUENCE "%s"."%s"' % (s, n)]
+    if _to_str(r[2]):
+        parts.append("INCREMENT BY %s" % _to_str(r[2]))
+    if _to_str(r[0]):
+        parts.append("MINVALUE %s" % _to_str(r[0]))
+    if _to_str(r[1]):
+        parts.append("MAXVALUE %s" % _to_str(r[1]))
+    parts.append("CYCLE" if _dm_up(r[3]) == "Y" else "NOCYCLE")
+    cache = _to_str(r[4])
+    parts.append("CACHE %s" % cache if cache and cache != "0" else "NOCACHE")
+    if _to_str(r[5]):
+        parts.append("START WITH %s" % _to_str(r[5]))
+    return " ".join(parts) + ";"
+
+
+def _objects_dm(conn, schema):
+    out = _empty_objects()
+    s = _dm_up(schema)
+    try:
+        for name, t in _q(conn, "SELECT OBJECT_NAME, OBJECT_TYPE FROM ALL_OBJECTS "
+                                "WHERE OWNER=%s AND SUBOBJECT_NAME IS NULL AND OBJECT_TYPE IN "
+                                "('TABLE','VIEW','PROCEDURE','FUNCTION','SEQUENCE','TRIGGER') ORDER BY 1"
+                                % quote_literal(s)):
+            k = _DM_KIND.get(_dm_up(t))
+            if k:
+                out[k].append(_to_str(name))
+    except Exception:
+        pass
+    # 兜底：某些版本/权限下 ALL_OBJECTS 不含视图、序列、触发器
+    for kind, sql in (
+            ("view", "SELECT VIEW_NAME FROM ALL_VIEWS WHERE OWNER=%s ORDER BY 1"),
+            ("sequence", "SELECT SEQUENCE_NAME FROM ALL_SEQUENCES WHERE SEQUENCE_OWNER=%s ORDER BY 1"),
+            ("trigger", "SELECT TRIGGER_NAME FROM ALL_TRIGGERS WHERE OWNER=%s ORDER BY 1")):
+        if not out[kind]:
+            try:
+                out[kind] = [_to_str(r[0]) for r in _q(conn, sql % quote_literal(s))]
+            except Exception:
+                pass
+    return out
+
+
+def _source_dm(conn, schema, name, kind):
+    s, n = _dm_up(schema), _dm_up(name)
+    k = (kind or "").lower()
+    if k == "table":
+        return _dm_table_ddl(conn, s, n)
+    if k == "sequence":
+        return _dm_sequence_ddl(conn, s, n)
+    if k == "view":
+        try:
+            rows = _q(conn, "SELECT TEXT FROM ALL_VIEWS WHERE OWNER=%s AND VIEW_NAME=%s"
+                            % (quote_literal(s), quote_literal(n)))
+            if rows and _to_str(rows[0][0]):
+                return 'CREATE OR REPLACE VIEW "%s"."%s" AS\n%s' % (s, n, _to_str(rows[0][0]))
+        except Exception:
+            pass
+        return ""
+    stype = _DM_SRC_TYPE.get(k)
+    if not stype:
+        return ""
+    try:
+        rows = _q(conn, "SELECT TEXT FROM ALL_SOURCE WHERE OWNER=%s AND NAME=%s AND TYPE=%s ORDER BY LINE"
+                        % (quote_literal(s), quote_literal(n), quote_literal(stype)))
+        if rows:
+            return "".join(_to_str(r[0]) for r in rows)
+    except Exception:
+        pass
+    if k == "trigger":
+        try:
+            rows = _q(conn, "SELECT TRIGGER_BODY FROM ALL_TRIGGERS WHERE OWNER=%s AND TRIGGER_NAME=%s"
+                            % (quote_literal(s), quote_literal(n)))
+            if rows and _to_str(rows[0][0]):
+                return _to_str(rows[0][0])
+        except Exception:
+            pass
+    return ""
+
+
+def _catalog_dm(conn, schema, limit=400):
+    """补全字典：表名 / 列名 / 类型（带长度），类型文本比 Oracle 版更贴近 DDL 写法。
+    注意 limit 的语义是「最多收多少张表」（与 driver_catalog 一致），
+    不是行数：按行截断会让 195 张表的库只覆盖前面二三十张。"""
+    rows = _q(conn, "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, DATA_LENGTH, DATA_PRECISION, DATA_SCALE, "
+                    "CHAR_LENGTH, CHAR_USED FROM ALL_TAB_COLUMNS WHERE OWNER=%s "
+                    "ORDER BY TABLE_NAME, COLUMN_ID" % quote_literal(_dm_up(schema)))
+    out, seen = [], set()
+    for r in rows:
+        t = _to_str(r[0])
+        if t not in seen:
+            if limit and len(seen) >= limit:
+                continue
+            seen.add(t)
+        out.append((t, _to_str(r[1]), _dm_type_text(r[2], r[3], r[4], r[5], r[6], r[7])))
+    return out
+
+
 # ---- SQLite ----
 def _objects_sqlite(conn, schema):
     out = _empty_objects()
@@ -1037,11 +1410,11 @@ def _catalog_sqlite(conn, schema, limit=400):
 
 
 _OBJECTS_IMPL = {"postgresql": _objects_pg, "mysql": _objects_mysql, "sqlserver": _objects_mssql,
-                 "oracle": _objects_ora, "dameng": _objects_ora, "sqlite": _objects_sqlite}
+                 "oracle": _objects_ora, "dameng": _objects_dm, "sqlite": _objects_sqlite}
 _SOURCE_IMPL = {"postgresql": _source_pg, "mysql": _source_mysql, "sqlserver": _source_mssql,
-                "oracle": _source_ora, "dameng": _source_ora, "sqlite": _source_sqlite}
+                "oracle": _source_ora, "dameng": _source_dm, "sqlite": _source_sqlite}
 _CATALOG_IMPL = {"postgresql": _catalog_pg, "mysql": _catalog_mysql, "sqlserver": _catalog_mssql,
-                 "oracle": _catalog_ora, "dameng": _catalog_ora, "sqlite": _catalog_sqlite}
+                 "oracle": _catalog_ora, "dameng": _catalog_dm, "sqlite": _catalog_sqlite}
 
 
 def driver_objects(self, conn, schema):
@@ -1087,6 +1460,127 @@ def driver_catalog(self, conn, schema, limit=400):
     return [{"name": t, "columns": tables[t]} for t in order]
 
 
+# ---- 过程 / 函数参数（右击「执行」弹窗用）----
+def _args_all_arguments(conn, schema, name, kind):
+    """Oracle 与达梦共用 ALL_ARGUMENTS。
+    实测达梦：POSITION 从 0 起；函数的返回值会以 ARGUMENT_NAME='V_RET' / IN_OUT='OUT'
+    混在参数里，必须剔除，否则调用时凭空多一个参数。"""
+    rows = _q(conn, "SELECT ARGUMENT_NAME, IN_OUT, DATA_TYPE, DATA_LENGTH, DATA_PRECISION, "
+                    "DATA_SCALE, CHAR_LENGTH, CHAR_USED, DEFAULT_VALUE "
+                    "FROM ALL_ARGUMENTS WHERE OWNER=%s AND OBJECT_NAME=%s AND PACKAGE_NAME IS NULL "
+                    "ORDER BY SEQUENCE"
+                    % (quote_literal(_to_str(schema).upper()), quote_literal(_to_str(name).upper())))
+    out = []
+    for r in rows:
+        an = _to_str(r[0])
+        if not an or an.upper() in ("V_RET", "RETURN", "RETURN_VALUE"):
+            continue
+        out.append({"name": an, "mode": (_to_str(r[1]).upper() or "IN"),
+                    "type": _dm_type_text(r[2], r[3], r[4], r[5], r[6], r[7]),
+                    "default": _to_str(r[8])})
+    return out
+
+
+def _pg_array(v):
+    """psycopg2 直接给 list；pg8000 可能给 {a,b} 文本，两种都接住。"""
+    if v is None:
+        return []
+    if isinstance(v, (list, tuple)):
+        return [_to_str(x) for x in v]
+    s = _to_str(v).strip()
+    if not s or s == "{}":
+        return []
+    if s.startswith("{") and s.endswith("}"):
+        body, out, buf, inq = s[1:-1], [], "", False
+        for ch in body:
+            if ch == '"':
+                inq = not inq
+                continue
+            if ch == "," and not inq:
+                out.append(buf)
+                buf = ""
+                continue
+            buf += ch
+        out.append(buf)
+        return out
+    return [s]
+
+
+def _args_pg(conn, schema, name, kind):
+    rows = _q(conn, "SELECT p.proargnames, p.proargmodes, "
+                    "ARRAY(SELECT format_type(t, NULL) FROM unnest("
+                    "COALESCE(p.proallargtypes, p.proargtypes)) AS t) "
+                    "FROM pg_proc p JOIN pg_namespace ns ON ns.oid = p.pronamespace "
+                    "WHERE ns.nspname = %s AND p.proname = %s ORDER BY p.oid LIMIT 1"
+                    % (quote_literal(_to_str(schema)), quote_literal(_to_str(name))))
+    if not rows:
+        return []
+    names = _pg_array(rows[0][0])
+    modes = _pg_array(rows[0][1])
+    types = _pg_array(rows[0][2])
+    out = []
+    for i, t in enumerate(types):
+        nm = names[i] if i < len(names) and names[i] else "arg%d" % (i + 1)
+        md = "IN"
+        if i < len(modes):
+            md = {"i": "IN", "o": "OUT", "b": "INOUT", "v": "IN"}.get(modes[i], "IN")
+        out.append({"name": nm, "mode": md, "type": t, "default": ""})
+    return out
+
+
+def _args_mysql(conn, schema, name, kind):
+    rows = _q(conn, "SELECT PARAMETER_NAME, PARAMETER_MODE, DATA_TYPE, DTD_IDENTIFIER "
+                    "FROM information_schema.PARAMETERS WHERE SPECIFIC_SCHEMA=%s AND SPECIFIC_NAME=%s "
+                    "ORDER BY ORDINAL_POSITION"
+                    % (quote_literal(schema), quote_literal(name)))
+    return [{"name": _to_str(r[0]), "mode": (_to_str(r[1]) or "IN").upper(),
+             "type": _to_str(r[3]) or _to_str(r[2]), "default": ""} for r in rows]
+
+
+def _args_mssql(conn, schema, name, kind):
+    rows = _q(conn, "SELECT p.name, TYPE_NAME(p.user_type_id) AS tn, p.is_output, p.max_length, "
+                    "p.precision, p.scale FROM sys.parameters p "
+                    "WHERE p.object_id = OBJECT_ID(%s) AND p.parameter_id > 0 "
+                    "ORDER BY p.parameter_id"
+                    % quote_literal("%s.%s" % (schema, name)))
+    out = []
+    for nm, tn, isout, maxlen, prec, scale in rows:
+        t = _to_str(tn)
+        low = t.lower()
+        try:
+            ml = int(maxlen)
+        except Exception:
+            ml = 0
+        if low in ("varchar", "nvarchar", "char", "nchar", "varbinary", "binary") and ml:
+            t += "(max)" if ml < 0 else "(%d)" % ml
+        elif low in ("decimal", "numeric") and prec is not None:
+            t += "(%s,%s)" % (prec, scale or 0)
+        out.append({"name": _to_str(nm).lstrip("@"), "mode": "OUT" if isout else "IN",
+                    "type": t, "default": ""})
+    return out
+
+
+def _args_none(conn, schema, name, kind):
+    return []
+
+
+_ARGS_IMPL = {"oracle": _args_all_arguments, "dameng": _args_all_arguments,
+              "postgresql": _args_pg, "mysql": _args_mysql,
+              "sqlserver": _args_mssql, "sqlite": _args_none}
+
+
+def driver_proc_args(self, conn, schema, name, kind):
+    """过程 / 函数的入参清单：[{name, mode, type, default}]。取不到就返回空表。"""
+    fn = _ARGS_IMPL.get(self.name)
+    if not fn:
+        return []
+    try:
+        return fn(conn, schema, name, kind) or []
+    except Exception:
+        return []
+
+
 Driver.objects = driver_objects
 Driver.source = driver_source
 Driver.catalog = driver_catalog
+Driver.proc_args = driver_proc_args
