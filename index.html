@@ -886,7 +886,10 @@
       state.redis.forEach(function (x) {
         var ro = document.createElement("option");
         ro.value = "redis:" + x.key;
-        ro.textContent = (x.label || x.key) + "  ·  " + x.host + ":" + x.port + "/db" + x.db +
+        var where = (x.mode === "sentinel")
+          ? ("哨兵 " + (x.master_name || "") + "  · db" + x.db)
+          : (x.host + ":" + x.port + "/db" + x.db);
+        ro.textContent = (x.label || x.key) + "  ·  " + where +
                          (x.readonly ? "  · 只读" : "  · 可写");
         ogr.appendChild(ro);
       });
@@ -1492,8 +1495,11 @@
     });
     // Redis 实例也列在这张表里：它同样是“一个可连的东西”，只是不进对象树
     state.redis.forEach(function (r) {
-      var addr = (r.host || "") + ":" + (r.port || "") + " / db" + (r.db || 0) +
-                 (r.username ? (" · ACL " + r.username) : "");
+      var addr = r.mode === "sentinel"
+        ? ("哨兵 " + ((r.sentinels || []).join("、") || "未填节点") + " / " + (r.master_name || "") +
+           " / db" + (r.db || 0))
+        : ((r.host || "") + ":" + (r.port || "") + " / db" + (r.db || 0));
+      addr += r.username ? (" · ACL " + r.username) : "";
       h.push('<div class="dsrow">');
       h.push('<span class="nm">' + esc(r.label || r.key) + "</span>");
       h.push('<span class="badge">redis</span>');
@@ -1597,6 +1603,11 @@
       return '<option value="' + esc(x.name) + '"' + (x.name === "redis" ? " selected" : "") + ">" +
         esc(x.label) + " — " + (x.available ? "可用" : "驱动缺失") + "</option>";
     }).join("");
+    var mode = (d && d.mode === "sentinel") ? "sentinel" : "standalone";
+    var sensTxt = "";
+    if (d && d.sentinels) {
+      sensTxt = (d.sentinels.join ? d.sentinels.join("\n") : String(d.sentinels));
+    }
     var h = ['<div style="border-top:1px solid #e2e8f0;padding-top:14px">'];
     h.push('<div style="font-size:13px;font-weight:650;margin-bottom:12px">' +
            (isEdit ? ("编辑 Redis 实例：" + esc(d.label || d.key)) : "新增数据源 · Redis") + "</div>");
@@ -1606,8 +1617,20 @@
     h.push('<div class="note" id="fDrvNote" style="color:#15803d">' +
            "Redis 不进 SQL 编辑器与对象树；保存后写入 config.json 的 redis 段，" +
            "在顶栏「Redis」面板里浏览 key、查看详情、执行命令</div>");
-    h.push('<label>主机地址</label><input id="fHost" value="' + esc(d.host || "127.0.0.1") + '" placeholder="IP 或域名">');
-    h.push('<label>端口</label><input id="fPort" value="' + esc(d.port == null ? "6379" : d.port) + '">');
+    h.push('<label>连接方式</label><div><select id="fRedisMode">' +
+           '<option value="standalone"' + (mode === "standalone" ? " selected" : "") +
+           '>单机 / 直连（填一个地址）</option>' +
+           '<option value="sentinel"' + (mode === "sentinel" ? " selected" : "") +
+           '>哨兵 Sentinel（自动解析 master）</option></select></div>');
+    h.push('<label class="rd-alone">主机地址</label><input class="rd-alone" id="fHost" value="' +
+           esc(d.host || "127.0.0.1") + '" placeholder="IP 或域名">');
+    h.push('<label class="rd-alone">端口</label><input class="rd-alone" id="fPort" value="' +
+           esc(d.port == null ? "6379" : d.port) + '">');
+    h.push('<label class="rd-sent">哨兵节点</label><textarea class="rd-sent" id="fSentinels" rows="3" ' +
+           'style="min-height:62px;resize:vertical" placeholder="每行一个 host:port，如 10.8.18.27:26379">' +
+           esc(sensTxt) + "</textarea>");
+    h.push('<label class="rd-sent">master 名称</label><input class="rd-sent" id="fMasterName" value="' +
+           esc((d && d.master_name) || "mymaster") + '" placeholder="哨兵里配的 master name，如 mymaster">');
     h.push('<label>库号 db</label><input id="fRdb" value="' + esc(d.db == null ? "0" : d.db) + '" placeholder="0-15">');
     h.push('<label>ACL 用户名</label><input id="fUser" value="' + esc(d.username || "") +
            '" autocomplete="off" placeholder="Redis 6+ 才需要；编辑时留空＝沿用">');
@@ -1626,14 +1649,29 @@
     h.push("</div>");
     h.push("</div>");
     wrap.innerHTML = h.join("");
+    var msel = document.getElementById("fRedisMode");
+    if (msel) msel.addEventListener("change", function () { applyRedisMode(this.value); });
+    applyRedisMode(mode);
     bindFormEvents();
+  }
+
+  // 单机模式填地址、哨兵模式填节点清单：两套字段同一张表单里，按模式显隐
+  function applyRedisMode(mode, scope) {
+    var wrap = $(scope || "dsFormWrap");
+    if (!wrap) return;
+    var sent = mode === "sentinel";
+    wrap.querySelectorAll(".rd-alone").forEach(function (el) { el.style.display = sent ? "none" : ""; });
+    wrap.querySelectorAll(".rd-sent").forEach(function (el) { el.style.display = sent ? "" : "none"; });
   }
 
   function collectRedisDs() {
     var inst = {
       label: fb("fLabel").trim(),
+      mode: fb("fRedisMode") || "standalone",
       host: fb("fHost").trim(),
       port: fb("fPort").trim(),
+      sentinels: fb("fSentinels").trim(),
+      master_name: fb("fMasterName").trim(),
       db: fb("fRdb").trim(),
       username: fb("fUser").trim(),
       readonly: fb("fReadonly") === "1"
@@ -1763,9 +1801,14 @@
     if (fb("fDriver") === "redis") {
       var inst = collectRedisDs();
       if (!inst.label) { toast("请先填写名称"); return; }
-      if (!inst.host) { toast("请填写主机地址"); return; }
+      if (inst.mode === "sentinel") {
+        if (!inst.sentinels) { toast("哨兵模式至少填一个哨兵节点（host:port）"); return; }
+        if (!inst.master_name) { toast("哨兵模式请填 master 名称"); return; }
+      } else if (!inst.host) { toast("请填写主机地址"); return; }
       box.className = "testbox";
-      box.textContent = "正在测试连接…";
+      box.textContent = inst.mode === "sentinel"
+        ? "正在向哨兵查询 " + inst.master_name + " 的 master …"
+        : "正在测试连接…";
       box.style.display = "block";
       box.style.background = "#f1f5f9";
       box.style.border = "1px solid #e2e8f0";
@@ -1774,6 +1817,7 @@
         if (d.ok) {
           box.className = "testbox ok";
           box.textContent = "连接成功（" + (d.elapsed_ms || 0) + " ms）\n" +
+            (d.mode === "sentinel" ? ("哨兵解析到: " + (d.target || "—") + "\n") : "") +
             "服务端版本: " + (d.version || "—") + "\n" +
             "角色: " + (d.role || "—") + "\n" +
             "当前 db 内 key 数: " + (d.dbsize == null ? "—" : d.dbsize) + "\n" +
@@ -1818,7 +1862,10 @@
     if (fb("fDriver") === "redis") {
       var inst = collectRedisDs();
       if (!inst.label) { toast("请先填写名称"); return; }
-      if (!inst.host) { toast("请填写主机地址"); return; }
+      if (inst.mode === "sentinel") {
+        if (!inst.sentinels) { toast("哨兵模式至少填一个哨兵节点（host:port）"); return; }
+        if (!inst.master_name) { toast("哨兵模式请填 master 名称"); return; }
+      } else if (!inst.host) { toast("请填写主机地址"); return; }
       apiPost("/api/redis/save", { inst: inst }).then(function (d) {
         if (!d.ok) { toast(errMsg(d, "保存失败")); return; }
         toast("已保存，正在刷新…");
@@ -2048,6 +2095,9 @@
         state.editingKind = "redis";
         renderDsForm({
           driver: "redis", key: key, label: (r && r.label) || key,
+          mode: (r && r.mode) || "standalone",
+          sentinels: (r && r.sentinels) || [],
+          master_name: (r && r.master_name) || "",
           host: (r && r.host) || "127.0.0.1", port: (r && r.port) || 6379,
           db: (r && r.db) || 0, username: (r && r.username) || "",
           readonly: r ? r.readonly !== false : true
@@ -2391,7 +2441,10 @@
     state.redis.forEach(function (x) {
       var o = document.createElement("option");
       o.value = x.key;
-      o.textContent = (x.label || x.key) + "  ·  " + x.host + ":" + x.port + " / db" + x.db +
+      o.textContent = (x.label || x.key) + "  ·  " +
+                      (x.mode === "sentinel"
+                        ? ("哨兵 " + (x.master_name || "") + " / db" + x.db)
+                        : (x.host + ":" + x.port + " / db" + x.db)) +
                       (x.readonly ? "  · 只读" : "  · 可写");
       sel.appendChild(o);
     });
@@ -2602,6 +2655,8 @@
   function renderRedisForm(x) {
     var isEdit = !!x;
     var d = x || { host: "127.0.0.1", port: 6379, db: 0, readonly: true };
+    var mode = (d.mode === "sentinel") ? "sentinel" : "standalone";
+    var sensTxt = d.sentinels ? (d.sentinels.join ? d.sentinels.join("\n") : String(d.sentinels)) : "";
     var h = ['<div style="border-top:1px solid #e2e8f0;padding-top:14px;margin-top:12px">'];
     h.push('<div style="font-size:13px;font-weight:650;margin-bottom:12px">' +
            (isEdit ? "编辑 Redis 实例：" + esc(d.label || d.key) : "新增 Redis 实例") + "</div>");
@@ -2611,11 +2666,21 @@
            ' placeholder="留空自动生成，如 epm-cache"></div>');
     h.push("<label>名称</label><div><input id=\"rFLabel\" value=\"" + esc(d.label || "") +
            '" style="width:100%" placeholder="如：生产缓存"></div>');
-    h.push("<label>主机</label><div><input id=\"rFHost\" value=\"" + esc(d.host || "") +
-           '" style="width:100%" placeholder="10.49.10.137"></div>');
-    h.push("<label>端口</label><div><input id=\"rFPort\" value=\"" + esc(d.port || 6379) +
-           '" style="width:100%" placeholder="6379"></div>');
-    h.push("<label>库号 db</label><div><input id=\"rFDb\" value=\"" + esc(d.db == null ? 0 : d.db) +
+    h.push('<label>连接方式</label><div><select id="rFMode" style="width:100%">' +
+           '<option value="standalone"' + (mode === "standalone" ? " selected" : "") +
+           '>单机 / 直连（填一个地址）</option>' +
+           '<option value="sentinel"' + (mode === "sentinel" ? " selected" : "") +
+           '>哨兵 Sentinel（自动解析 master）</option></select></div>');
+    h.push("<label class=\"rd-alone\">主机</label><div class=\"rd-alone\"><input id=\"rFHost\" value=\"" +
+           esc(d.host || "") + '" style="width:100%" placeholder="10.49.10.137"></div>');
+    h.push("<label class=\"rd-alone\">端口</label><div class=\"rd-alone\"><input id=\"rFPort\" value=\"" +
+           esc(d.port || 6379) + '" style="width:100%" placeholder="6379"></div>');
+    h.push('<label class="rd-sent">哨兵节点</label><div class="rd-sent">' +
+           '<textarea id="rFSent" style="width:100%;min-height:56px;resize:vertical" ' +
+           'placeholder="每行一个 host:port，如 10.8.18.27:26379">' + esc(sensTxt) + "</textarea></div>");
+    h.push('<label class="rd-sent">master 名称</label><div class="rd-sent"><input id="rFMaster" value="' +
+           esc(d.master_name || "mymaster") + '" style="width:100%" placeholder="mymaster"></div>');
+    h.push('<label>库号 db</label><div><input id="rFDb" value="' + esc(d.db == null ? 0 : d.db) +
            '" style="width:100%" placeholder="0"></div>');
     h.push("<label>用户名 ACL</label><div><input id=\"rFUser\" style=\"width:100%\" " +
            'placeholder="Redis 6+ ACL 用户名，没有就留空"></div>');
@@ -2632,14 +2697,20 @@
     h.push('<button class="btn run" id="btnRSaveR">保存</button>');
     h.push("</div></div>");
     $("rFormWrap").innerHTML = h.join("");
+    var msel = $("rFMode");
+    if (msel) msel.addEventListener("change", function () { applyRedisMode(this.value, "rFormWrap"); });
+    applyRedisMode(mode, "rFormWrap");
   }
 
   function collectRedisInst() {
     return {
       key: ($("rFKey").value || "").trim(),
       label: ($("rFLabel").value || "").trim(),
+      mode: $("rFMode").value || "standalone",
       host: ($("rFHost").value || "").trim(),
       port: ($("rFPort").value || "").trim(),
+      sentinels: ($("rFSent").value || "").trim(),
+      master_name: ($("rFMaster").value || "").trim(),
       db: ($("rFDb").value || "").trim(),
       username: ($("rFUser").value || "").trim(),
       password: $("rFPass").value || "",
@@ -2650,12 +2721,21 @@
   function testRedisInst() {
     var box = $("rFMsg");
     var inst = collectRedisInst();
-    if (!inst.host) { box.className = "testbox err"; box.textContent = "主机不能为空"; return; }
-    box.className = "testbox"; box.textContent = "正在连接 " + inst.host + ":" + (inst.port || 6379) + " …";
+    if (inst.mode !== "sentinel" && !inst.host) {
+      box.className = "testbox err"; box.textContent = "单机模式主机不能为空"; return;
+    }
+    if (inst.mode === "sentinel" && !inst.sentinels) {
+      box.className = "testbox err"; box.textContent = "哨兵模式至少填一个哨兵节点"; return;
+    }
+    box.className = "testbox";
+    box.textContent = inst.mode === "sentinel"
+      ? "正在向哨兵查询 " + (inst.master_name || "mymaster") + " 的 master …"
+      : "正在连接 " + inst.host + ":" + (inst.port || 6379) + " …";
     apiPost("/api/redis/test", { inst: inst }).then(function (d) {
       if (!d.ok) { box.className = "testbox err"; box.textContent = errMsg(d, "连接失败"); return; }
       box.className = "testbox ok";
-      box.textContent = "连接成功：Redis " + (d.version || "?") + " / " + (d.role || "?") +
+      box.textContent = "连接成功：" + (d.mode === "sentinel" ? ("哨兵解析到 " + (d.target || "?") + " → ") : "") +
+                        "Redis " + (d.version || "?") + " / " + (d.role || "?") +
                         " / DBSIZE " + (d.dbsize == null ? "?" : d.dbsize) + " / " +
                         (d.used_memory_human || "?") + "  (" + d.elapsed_ms + " ms)";
     }).catch(function (e) { box.className = "testbox err"; box.textContent = e.message; });
@@ -2664,7 +2744,12 @@
   function saveRedisInst() {
     var box = $("rFMsg");
     var inst = collectRedisInst();
-    if (!inst.host) { box.className = "testbox err"; box.textContent = "主机不能为空"; return; }
+    if (inst.mode !== "sentinel" && !inst.host) {
+      box.className = "testbox err"; box.textContent = "单机模式主机不能为空"; return;
+    }
+    if (inst.mode === "sentinel" && !inst.sentinels) {
+      box.className = "testbox err"; box.textContent = "哨兵模式至少填一个哨兵节点"; return;
+    }
     box.className = "testbox"; box.textContent = "正在保存…";
     apiPost("/api/redis/save", { inst: inst }).then(function (d) {
       if (!d.ok) { box.className = "testbox err"; box.textContent = errMsg(d, "保存失败"); return; }

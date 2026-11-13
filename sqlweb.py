@@ -367,6 +367,9 @@ def public_redis(inst):
     return {
         "key": inst.get("key"),
         "label": inst.get("label"),
+        "mode": inst.get("mode") or "standalone",
+        "sentinels": list(inst.get("sentinels") or []),
+        "master_name": inst.get("master_name") or "",
         "host": inst.get("host"),
         "port": inst.get("port"),
         "db": inst.get("db"),
@@ -1216,19 +1219,36 @@ class Handler(BaseHTTPRequestHandler):
                 return None, "「%s」超出范围（%d-%d）" % (name, lo, hi)
             return iv, None
 
-        port, e1 = _int("port", 6379, 1, 65535)
+        mode = (d.get("mode") or "standalone").strip().lower()
+        if mode not in ("standalone", "sentinel"):
+            return None, "「连接方式」只能是 standalone（单机）或 sentinel（哨兵）"
+        port, e1 = _int("port", 26379 if mode == "sentinel" else 6379, 1, 65535)
         if e1:
             return None, e1
         db, e2 = _int("db", 0, 0, 255)
         if e2:
             return None, e2
         host = (d.get("host") or "").strip()
-        if not host:
+        sens = redis_panel.parse_sentinel_nodes(d.get("sentinels"))
+        master_name = (d.get("master_name") or "").strip()
+        if mode == "sentinel":
+            if not sens:
+                return None, "哨兵模式下至少要填一个哨兵节点（host:port，如 10.8.18.27:26379）"
+            if not master_name:
+                return None, "哨兵模式下必须填 master 名称（如 mymaster）"
+            # host/port 只用于下拉与列表展示，真正连哪台 master 每次由哨兵现给
+            host = host or sens[0][0]
+            if d.get("port") in (None, ""):
+                port = sens[0][1]
+        elif not host:
             return None, "主机地址不能为空"
         label = (d.get("label") or "").strip() or host
         return {
             "key": (d.get("key") or "").strip(),
             "label": label,
+            "mode": mode,
+            "sentinels": ["%s:%s" % (h, p) for h, p in sens] if mode == "sentinel" else [],
+            "master_name": master_name if mode == "sentinel" else "",
             "host": host,
             "port": port,
             "db": db,
@@ -1240,7 +1260,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _redis_test(self, payload):
         d = payload.get("inst") or {}
-        if (d.get("host") or "").strip():
+        # 哨兵模式下主机可以留空（由哨兵现解析），所以判据里也要认 sentinels / master_name
+        if (d.get("host") or "").strip() or d.get("sentinels") or (d.get("master_name") or "").strip():
             inst, msg = self._redis_inst_from_payload(d)
             if inst is None:
                 return self._json({"ok": False, "error": {
@@ -1265,9 +1286,11 @@ class Handler(BaseHTTPRequestHandler):
                     dbsize = c.execute("DBSIZE")
                 except Exception:
                     dbsize = None
+                target = "%s:%s" % (c.host, c.port)
             return self._json({
                 "ok": True, "version": kv.get("redis_version", ""),
                 "role": kv.get("role", ""), "dbsize": dbsize,
+                "mode": inst.get("mode") or "standalone", "target": target,
                 "used_memory_human": kv.get("used_memory_human", ""),
                 "elapsed_ms": round((time.time() - started) * 1000, 1),
             })
@@ -1317,8 +1340,13 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json({"ok": False, "error": {
                 "message": "写入 config.json 失败: %s" % e, "stage": "persist"}}, 500)
-        AppState.logmsg("保存 Redis 实例 key=%s host=%s:%s db=%s"
-                        % (key, entry.get("host"), entry.get("port"), entry.get("db")))
+        if entry.get("mode") == "sentinel":
+            AppState.logmsg("保存 Redis 哨兵实例 key=%s sentinels=%s master=%s db=%s"
+                            % (key, ",".join(entry.get("sentinels") or []),
+                               entry.get("master_name"), entry.get("db")))
+        else:
+            AppState.logmsg("保存 Redis 实例 key=%s host=%s:%s db=%s"
+                            % (key, entry.get("host"), entry.get("port"), entry.get("db")))
         return self._json({"ok": True, "key": key})
 
     def _redis_delete(self, payload):
@@ -1957,11 +1985,17 @@ def normalize_redis(cfg):
     for i, x in enumerate(raw):
         if not isinstance(x, dict):
             continue
+        mode = "sentinel" if (x.get("mode") or "").strip().lower() == "sentinel" else "standalone"
+        sens = ["%s:%s" % (h, p)
+                for h, p in redis_panel.parse_sentinel_nodes(x.get("sentinels"))]
         inst = {
             "key": x.get("key") or ("redis%d" % (i + 1)),
             "label": x.get("label") or x.get("key") or ("Redis %d" % (i + 1)),
+            "mode": mode,
+            "sentinels": sens if mode == "sentinel" else [],
+            "master_name": x.get("master_name") or "",
             "host": x.get("host") or "127.0.0.1",
-            "port": int(x.get("port") or 6379),
+            "port": int(x.get("port") or (26379 if mode == "sentinel" else 6379)),
             "password": x.get("password") or "",
             "username": x.get("username") or "",
             "db": int(x.get("db") or 0),

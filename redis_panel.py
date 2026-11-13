@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """Redis 面板（移植自 sqlweb v2.3，保持行为一致）。"""
 import json
+import queue
 import shlex
 import socket
+import threading
 import time
 
 class RedisError(Exception):
@@ -149,8 +151,137 @@ psubscribe punsubscribe wait debug module config acl client
 """.split())
 
 
+# ---------------------------------------------------------------- 哨兵（Sentinel）
+# 哨兵模式下数据源里不存 master 的真实地址，每次现问哨兵要，故障转移后自然跟上。
+# 问一次要走哨兵一个往返（几毫秒），所以解析结果按实例 key 缓存 5 秒，避免刷 key 列表时反复问。
+_SENTINEL_CACHE = {}
+_SENTINEL_TTL = 5.0
+_SENTINEL_TIMEOUT = 3.0
+
+
+def parse_sentinel_nodes(values):
+    """把哨兵节点规整成 [(host, port)]。支持多行、"a:1,b:2"、带 redis:// 前缀、省略端口默认 26379。"""
+    if isinstance(values, str):
+        values = values.replace(",", "\n").replace(";", "\n").replace(" ", "\n").splitlines()
+    out = []
+    for raw in (values or []):
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        if "://" in s:
+            s = s.split("://", 1)[1]
+        s = s.split("/", 1)[0]
+        host, _, port = s.rpartition(":") if ":" in s else (s, "", "")
+        host = (host or "").strip()
+        try:
+            p = int(port or 26379)
+        except ValueError:
+            p = 26379
+        if host:
+            out.append((host, p))
+    return out
+
+
+def sentinel_master_addr(inst):
+    """向哨兵要 master 地址，并确认它真的是 master。
+
+    返回 (host, port, 探测日志)。哨兵全部不可用、或解析出的节点角色不是 master 时抛 RedisError ——
+    故障转移中间态下宁可报错让用户重试，也不要把一个从库当 master 用（从库会拒写）。
+    """
+    name = str(inst.get("master_name") or "mymaster").strip() or "mymaster"
+    pwd = inst.get("password") or None
+    user = inst.get("username") or None
+    timeout = min(float(inst.get("timeout") or 5), _SENTINEL_TIMEOUT)
+    nodes = parse_sentinel_nodes(inst.get("sentinels"))
+    if not nodes:
+        raise RedisError("哨兵模式下没有可用的哨兵节点（应填 host:port，如 10.8.18.27:26379）")
+    log, addr = [], None
+    # 哨兵并发问：串行遇到网段不通要逐个吃满超时（3 个哨兵就是 9 秒），
+    # 并发后总耗时约等于单节点一个超时，谁先给出地址就用谁。
+    q = queue.Queue()
+    jobs = []
+
+    def ask(h, p):
+        for use_auth in (False, True):
+            if use_auth and not pwd:
+                return q.put((None, "%s:%s 需要口令但没配口令" % (h, p)))
+            client = None
+            try:
+                client = RedisClient(h, p, 0, pwd if use_auth else None,
+                                     user if use_auth else None, timeout).connect()
+                got = client.execute("SENTINEL", "get-master-addr-by-name", name)
+                if got and len(got) >= 2:
+                    return q.put((got, "%s:%s%s 给出 %s → %s:%s"
+                                  % (h, p, "（带口令）" if use_auth else "", name, got[0], got[1])))
+                return q.put((None, "%s:%s 不认识 master「%s」" % (h, p, name)))
+            except Exception as e:
+                msg = str(e).replace("\n", " ")[:80]
+                # 免密被 NOAUTH 拒掉时改带口令再问一次（connect() 本身不发 AUTH，必须真执行才发现）
+                if (not use_auth) and pwd and "NOAUTH" in msg.upper():
+                    continue
+                return q.put((None, "%s:%s 连不上/拒绝（%s）" % (h, p, msg)))
+            finally:
+                try:
+                    if client is not None:
+                        client.close()
+                except Exception:
+                    pass
+
+    for h, p in nodes:
+        t = threading.Thread(target=ask, args=(h, p), daemon=True)
+        t.start()
+        jobs.append(t)
+    deadline = time.time() + timeout + 0.6
+    got = 0
+    while got < len(jobs):
+        left = deadline - time.time()
+        if left <= 0:
+            break
+        try:
+            a, line = q.get(timeout=left)
+        except queue.Empty:
+            break
+        got += 1
+        log.append(line)
+        if a:
+            addr = a
+            break
+    if not addr:
+        raise RedisError("哨兵没给出「%s」的 master 地址；探测过程：%s"
+                         % (name, "；".join(log) or "无"))
+    host, port = str(addr[0]), int(addr[1])
+    # 角色校验也用短超时：哨兵答了但节点连不上时，没必要让它等满整个超时
+    probe = RedisClient(host, port, 0, pwd, user, min(timeout, 2.5))
+    try:
+        probe.connect()
+        role = probe.execute("ROLE") or []
+    except Exception as e:
+        raise RedisError("连哨兵给的 master %s:%s 失败：%s" % (host, port, str(e).replace("\n", " ")[:100]))
+    finally:
+        try:
+            probe.close()
+        except Exception:
+            pass
+    role_name = str(role[0]).lower() if role else ""
+    if role_name and role_name != "master":
+        raise RedisError("哨兵指向的 %s:%s 当前角色是 %s（可能正在故障转移），稍后重试"
+                         % (host, port, role_name))
+    log.append("master %s:%s 角色确认 = %s" % (host, port, role_name or "unknown"))
+    return host, port, log
+
+
 def redis_conn(inst):
-    return RedisClient(inst["host"], inst["port"], inst["db"],
+    if str(inst.get("mode") or "standalone").lower() == "sentinel":
+        ck = str(inst.get("key") or "") + "|" + str(inst.get("master_name") or "")
+        hit = _SENTINEL_CACHE.get(ck)
+        if hit and (time.time() - hit[2]) < _SENTINEL_TTL:
+            host, port = hit[0], hit[1]
+        else:
+            host, port, _ = sentinel_master_addr(inst)
+            _SENTINEL_CACHE[ck] = (host, port, time.time())
+    else:
+        host, port = inst["host"], inst["port"]
+    return RedisClient(host, port, inst["db"],
                        inst.get("password"), inst.get("username"), inst.get("timeout", 5))
 
 
@@ -163,8 +294,14 @@ def redis_jsonable(v):
 
 
 def redis_overview(inst):
-    info = {"instance": inst["key"], "host": inst["host"], "port": inst["port"], "db": inst["db"]}
+    conn_mode = str(inst.get("mode") or "standalone").lower()
+    info = {"instance": inst["key"], "host": inst["host"], "port": inst["port"],
+            "db": inst["db"], "conn_mode": conn_mode}
+    if conn_mode == "sentinel":
+        info["master_name"] = inst.get("master_name") or ""
+        info["sentinels"] = ["%s:%s" % (h, p) for h, p in parse_sentinel_nodes(inst.get("sentinels"))]
     with redis_conn(inst) as c:
+        info["resolved"] = "%s:%s" % (c.host, c.port)
         for cmd in (("PING",),):
             c.execute(*cmd)
         raw = c.execute("INFO") or ""
