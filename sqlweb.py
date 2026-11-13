@@ -1620,8 +1620,15 @@ class Handler(BaseHTTPRequestHandler):
             out = drv.overview(conn)
             out["driver"] = ds.get("driver")
             out["db"] = ds.get("key")
-            out["schemas"] = filter_schemas(ds, out.get("schemas") or [])
+            _raw_schemas = out.get("schemas") or []
+            out["schemas"] = filter_schemas(ds, _raw_schemas)
             out["default_schema"] = (out.get("schemas") or [""])[0]
+            # 白名单一个都没命中（典型：PG 把库名 HC_APP 填进了模式框）时，把这个库里
+            # 真实存在的模式回给前端，否则树只显示「没有可显示的模式」，人无从下手。
+            _white = ds.get("visible_schemas") or []
+            if not out["schemas"] and _white:
+                out["white_missing"] = [str(x) for x in _white]
+                out["schemas_hint"] = [str(x) for x in _raw_schemas][:12]
             # 白名单内的每个模式有几张表：schema 行右侧显示（如 public 73）
             out["schema_counts"] = self._schema_counts(conn, drv, out.get("schemas") or [])
             return out

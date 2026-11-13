@@ -1192,8 +1192,19 @@
     if (ov.database_error) {
       h.push('<div class="treeload bad">' + esc(truncate(ov.database_error, 140)) + "</div>");
     } else if (!state.schemas.length) {
-      h.push('<div class="treeload">没有可显示的模式' +
-             (ov.schema_error ? ('：' + esc(truncate(ov.schema_error, 120))) : "") + "</div>");
+      var wm = (ov.white_missing || []).join("、");
+      var shint = ov.schemas_hint || [];
+      if (wm) {
+        h.push('<div class="treeload">可见模式「' + esc(wm) + "」在该库里不存在。</div>");
+        if (shint.length) {
+          h.push('<div class="treeload">该库实际的模式：<span class="mono">' + esc(shint.join("、")) +
+                 '</span>。到【数据源管理】编辑这个数据源，把「可见模式」改成上面列出的名字' +
+                 "（PG 里库名不等于模式名）。</div>");
+        }
+      } else {
+        h.push('<div class="treeload">没有可显示的模式' +
+               (ov.schema_error ? ("：" + esc(truncate(ov.schema_error, 120))) : "") + "</div>");
+      }
     }
     if (state.schemas.length) pushSchemas(1);
     $("tree").innerHTML = h.join("");
@@ -1551,9 +1562,8 @@
     // 只显示选中的库/模式：白名单填在这里，对象树与元数据接口都只暴露这些
     h.push("<label>可见模式</label>");
     h.push('<div><input id="fVs" value="' + esc((d.visible_schemas || []).join(", ")) +
-           '" placeholder="留空 = 全部；多个用逗号分隔，如 MUCONFIG,MUAPP,MUCONFIG" style="width:100%">' +
-           '<div class="note" style="margin-top:4px">达梦的「库」就是模式（用户名）。只填要给人看的，' +
-           'SYS/SYSDBA/SYSAUDITOR 这类系统模式填进来也会被隐藏掉。</div></div>');
+           '" placeholder="留空 = 全部；多个用逗号分隔，如 MUCONFIG,MUAPP" style="width:100%">' +
+           '<div class="note" id="fVsNote" style="margin-top:4px">' + esc(vsNote(d.driver)) + "</div></div>");
 
     h.push("</div>");
     h.push('<div class="testbox" id="dsTestBox"></div>');
@@ -1698,8 +1708,31 @@
       note.textContent = drv.info || "";
       note.style.color = drv.available ? "#15803d" : "#b91c1c";
     }
+    var vsN = $("fVsNote");
+    if (vsN) vsN.textContent = vsNote(driver);
     if (!isSql && !fb("fPort") && drv && drv.default_port) {
       $("fPort").value = drv.default_port;
+    }
+  }
+
+  // 各家「模式」的含义不一样，这里按驱动把话说清：
+  // PG 的库名（database）跟模式（schema）是两层，把库名填进白名单会一个都匹配不上。
+  function vsNote(driver) {
+    switch (driver) {
+      case "postgresql":
+        return "PG 的「库」是上面那栏的库名（database），这里的模式是库内的 schema，常见填 public。" +
+               "把库名（如 HC_APP）填进来会一个都匹配不上，左侧只剩「没有可显示的模式」。留空 = 该库全部模式。";
+      case "mysql":
+        return "MySQL 没有独立 schema，这里的模式就是库名（database），填 xxAPP、xxCONF 这类。留空 = 全部。";
+      case "sqlserver":
+        return "填 schema（默认 dbo），多个用逗号分隔。留空 = 全部。";
+      case "oracle":
+        return "Oracle 的模式就是用户名（schema），填业务账号名。留空 = 全部可见用户。";
+      case "sqlite":
+        return "SQLite 只有一个 main，一般留空。";
+      default:
+        return "达梦的「库」就是模式（用户名或 CREATE SCHEMA 建的独立模式）。" +
+               "只填要给人看的，SYS/SYSDBA/SYSAUDITOR 这类系统模式填进来也会被隐藏掉。";
     }
   }
 

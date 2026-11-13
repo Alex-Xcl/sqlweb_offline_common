@@ -330,6 +330,8 @@ python -m pip download -d wheels pymssql oracledb
 - 大小写不敏感，`muapp,muconfig` 与 `MUAPP,MUCONFIG` 等价
 - 达梦里"库"就是 schema（即用户名），所以填 `MUAPP,MUCONFIG` 就能把 `SYS / SYSAUDITOR / SYSDBA / SYSSSO / EALDWD / EALEPM / EALODS` 一起藏掉
 - 白名单外的 schema 不是"藏起来但能绕"：带 `schema` 参数读表或执行 SQL 会直接 403
+- **各家"模式"的含义不一样，别填错层**：PostgreSQL 的库（database）和模式（schema）是两层，白名单要填 schema（常见 `public`），把库名填进去会一个都匹配不上；MySQL 没有独立 schema，填的就是库名；Oracle 填用户名；SQL Server 填 `dbo` 这类 schema；达梦填用户名或 `CREATE SCHEMA` 建的独立模式。数据源表单里的说明会随所选驱动自动切换
+- **白名单零命中时不再只显示"没有可显示的模式"**：`/api/overview` 会额外回 `white_missing`（配了但库里没有的名字）与 `schemas_hint`（该库真实存在的模式，最多 12 个），对象树直接把这两条摊开讲，并提示去数据源管理改哪个字段
 
 **并发**：每次请求独立建连接、用完即关；服务端多线程处理请求；状态库的写操作（增删改数据源 / Redis 实例 / 账号）
 用一把进程内锁串行化。所以多人同时查询互不干扰，有人同时在改数据源也不会读坏配置。
