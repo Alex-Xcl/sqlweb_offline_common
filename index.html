@@ -1059,6 +1059,7 @@
     resetTreeSearch();
     $("tree").innerHTML = '<div class="treeload">正在加载对象…</div>';
     state.expanded = {};
+    state.groupOpen = {};
     state.currentSchema = "";
     return apiGet(dbQuery()).then(function (d) {
       if (!d.ok) throw new Error(errMsg(d, "加载对象树失败"));
@@ -1088,6 +1089,7 @@
     }
     state.database = lib;
     state.expanded = {};
+    state.groupOpen = {};
     state.currentSchema = "";
     resetTreeSearch();
     $("tree").innerHTML = '<div class="treeload">正在切换库 ' + esc(lib) + " …</div>";
@@ -1160,7 +1162,8 @@
           if (!list.length) return;
           shown += list.length;
           var gk = s + "::" + g.k;
-          var open = state.groupOpen[gk] !== false;
+          // 组默认收起（点一下组行才展开）；本地搜索有关键字时强制展开，便于看命中项
+          var open = q ? true : (state.groupOpen[gk] === true);
           h.push('<div class="tnode grp depth' + (depth + 1) + '" data-group="' + esc(gk) +
                  '" title="' + esc(g.label + " 共 " + list.length + " 个") + '">' +
                  '<span class="ic">' + (open ? "▾" : "▸") + "</span>" +
@@ -1854,6 +1857,7 @@
         state.databasesOfDb = [];
         state.schemas = [];
         state.expanded = {};
+        state.groupOpen = {};
         state.currentSchema = "";
       }
       state.dbLibs = {};
@@ -1884,6 +1888,7 @@
     state.databasesOfDb = (state.dbLibs[key] || []).slice();
     state.schemas = [];
     state.expanded = {};
+    state.groupOpen = {};
     state.currentSchema = "";
     state.schemaCounts = {};
     resetTreeSearch();
@@ -1942,7 +1947,8 @@
       return;
     }
     if (grp) {
-      state.groupOpen[grp] = state.groupOpen[grp] === false;
+      // 默认收起，点一下展开、再点收起
+      state.groupOpen[grp] = !(state.groupOpen[grp] === true);
       renderTree();
       return;
     }
@@ -1997,6 +2003,7 @@
   $("btnRun").addEventListener("click", runSql);
   $("btnClear").addEventListener("click", function () {
     $("sql").value = "";
+    syncHL();
     $("rbody").innerHTML = '<div class="empty">已清空</div>';
     $("statInfo").textContent = "就绪";
     state.lastResult = null;
@@ -2822,8 +2829,17 @@
   function treeQuery(schema, table) {
     if (!state.db) { toast("请先选择数据源"); return; }
     state.currentSchema = schema;
-    $("sql").value = selectAllSql(schema, table, 100);
+    setEditorSql(selectAllSql(schema, table, 100));
     runSql();
+  }
+
+  // textarea 的文字是透明的，真正显示的是 #hl 高亮层；程序里改 value 必须同步刷新，
+  // 否则编辑器看起来是空的（手工输入时 input 事件会自动同步，所以之前没暴露）。
+  function setEditorSql(txt) {
+    $("sql").value = txt;
+    syncHL();
+    $("sql").scrollTop = 0;
+    $("sql").scrollLeft = 0;
   }
 
   /* 生成 INSERT：取该表 1 行真实数据生成完整语句；空表则用 ? 占位。
@@ -2851,7 +2867,7 @@
         return quoteIdent(c, drv);
       }).join(", ") + ")\nVALUES (" + vals.join(", ") + ");";
       state.currentSchema = schema;
-      $("sql").value = txt;
+      setEditorSql(txt);
       state.lastResult = null;
       $("statInfo").innerHTML = "已生成 INSERT 语句 · " + esc(schema + "." + table) +
         (rows.length ? "（按该表 1 行数据填充）" : "（空表，值用 ? 占位）") + " · 未执行";
@@ -3029,12 +3045,7 @@
     function sep() { items.push("-"); }
 
     if (grp) {
-      var open = state.groupOpen[grp] !== false;
-      plain(open ? "收起这一组" : "展开这一组", function () {
-        state.groupOpen[grp] = !open;
-        renderTree();
-      });
-      return showCtx(x, y, items);
+      return;   // 组节点不再提供「收起/展开这一组」菜单，点组行本身即可切换
     }
 
     var full = sch ? (sch + "." + (tbl || obj || "")) : "";
