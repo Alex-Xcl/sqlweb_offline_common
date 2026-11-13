@@ -499,10 +499,13 @@ HTTP 层同时核对：`/api/schemas` 只回白名单里的 `app`，`/api/object
 | 达梦 DM8（业务账号） | 172.168.3.122:5236 / `EALEPM`（345 表） | 表 345 / 视图 23 / 存储过程 5 | `SELECT * FROM "EALEPM"."ACT_WF_GROUP_MULTI" LIMIT 100;` | 0 行 · 23 ms |
 | MySQL / Doris | 10.189.5.86:29992 / `dm_fin_guanbao`（1735 表 + 52 视图） | 表 1735 / 视图 52 | ``SELECT * FROM `dm_fin_guanbao`.`dim_account` LIMIT 100;`` | 100 行 · 379 ms |
 | SQLite | 包内 `demo.sqlite` / `main` | 表 2 / 视图 1 | `SELECT * FROM "main"."t_order" LIMIT 100;` | 1 行 · 2 ms |
-| Oracle | 暂无实例（本机 `192.168.175.103:1521` 不可达），只做了方言离线校验 | 分组走同一个 `renderTree`，不另有分支 | `SELECT * FROM "app"."t_user" WHERE ROWNUM <= 100;` | 待有库时点验 |
-| SQL Server | 暂无实例，只做了方言离线校验 | 同上 | `SELECT TOP 100 * FROM [app].[t_user];` | 待有库时点验 |
+| Oracle 19c EE | 172.168.7.31:1521 / `ORCL`，业务库账号 `SGHB_8089` | 表 1491 / 视图 32 / 存储过程 133 / 函数 2 / 序列 2 | `SELECT * FROM "SGHB_8089"."ACT_EVT_LOG" WHERE ROWNUM <= 100;` | 0 行 · 161 ms |
+| Oracle 19c EE | 同上，中央库账号 `SGCONFIG_8089`（只有表） | 表 75 | `SELECT * FROM "SGCONFIG_8089"."BIZ_REMOTE_DEFINE" WHERE ROWNUM <= 100;` | 0 行 · 138 ms |
+| SQL Server 2019 | 172.168.6.32:1433 / `JG_YS001`（业务库，`dbo`） | 表 740 / 视图 115 / 存储过程 439 / 函数 6 | `SELECT TOP 100 * FROM [dbo].[ACT_EVT_LOG];` | 0 行 · 74 ms |
 
-> 方言校验脚本：`过程文件\_dialect_check.py`，从 `index.html` 里抠出 `quoteIdent` / `selectAllSql` 在 node 里对六种驱动各生成一条，用来保证 Oracle / SQL Server 在没有实例时生成的语句也是对的（`ROWNUM` / `TOP`，标识符引号分别是 `"`、`` ` ``、`[]`）。
+> 方言校验脚本：`过程文件\_dialect_check.py`，从 `index.html` 里抠出 `quoteIdent` / `selectAllSql` 在 node 里对六种驱动各生成一条，用来复核 Oracle / SQL Server 的 `ROWNUM` / `TOP` 与三种标识符引号（`"`、`` ` ``、`[]`）。
+>
+> 现场拿到实例后补测到的两个雷：① SQL Server 2019 上 `sa` 能登实例却进不了指定的库时，`pymssql` 报的是 `18456 登录失败` 而不是「库不存在」，实际库里并没有那个名字（`USE [JG_CONF]` 直接 `911 Database does not exist`）——遇到登录失败先用 `master` 库登进去 `SELECT name FROM sys.databases` 核对库名；② Oracle thin 模式连 19c 不需要装客户端，`oracledb` 直连即通，两个账号各自是一个 schema，按账号建两个数据源即可（`dbname` 填服务名 `ORCL`，`visible_schemas` 填账号名）。
 
 **参数探测（六驱动）**：`drivers.proc_args(conn, schema, name, kind)`
 
