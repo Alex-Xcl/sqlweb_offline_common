@@ -490,6 +490,20 @@ HTTP 层同时核对：`/api/schemas` 只回白名单里的 `app`，`/api/object
 - **只读数据源**：执行被拦下（`stage=readonly`），但仍然把可复制的 `CALL ...` 语句回给前端 —— 只读环境里也能拿到一条准确语句去 DBA 那边跑。
 - 右击菜单贴鼠标出现，超出视口自动翻边；点空白、Esc、窗口 resize 都会收起。
 
+**六种驱动是同一套行为（分组默认收起 / 右击查询同时写进编辑器 / 组标题无右键菜单）**，差异只在「库里实际有什么对象」和「取前 N 行的方言」——空组不渲染，所以 SQLite 只有两组、达梦某库可能只有三组，这不是漏做：
+
+| 驱动 | 点验环境 | 展开 schema 看到的分组（全部默认收起） | 右击「查询」写进编辑器的语句 | 实测结果 |
+| --- | --- | --- | --- | --- |
+| PostgreSQL | 172.168.9.164:4321 / `HC_APP`（462 表） | 表 462 / 视图 38 / 存储过程 40 / 函数 2 / 序列 4 | `SELECT * FROM "public"."act_evt_log" LIMIT 100;` | 0 行 · 49 ms |
+| 达梦 DM8（DBA 账号） | 172.168.3.122:5236 / `SQLWEB_DMTEST` | 表 2 / 视图 1 / 存储过程 2 / 函数 1 / 序列 1 / 触发器 1 | `SELECT * FROM "SQLWEB_DMTEST"."T_USER" LIMIT 100;` | 1 行 · 42 ms |
+| 达梦 DM8（业务账号） | 172.168.3.122:5236 / `EALEPM`（345 表） | 表 345 / 视图 23 / 存储过程 5 | `SELECT * FROM "EALEPM"."ACT_WF_GROUP_MULTI" LIMIT 100;` | 0 行 · 23 ms |
+| MySQL / Doris | 10.189.5.86:29992 / `dm_fin_guanbao`（1735 表 + 52 视图） | 表 1735 / 视图 52 | ``SELECT * FROM `dm_fin_guanbao`.`dim_account` LIMIT 100;`` | 100 行 · 379 ms |
+| SQLite | 包内 `demo.sqlite` / `main` | 表 2 / 视图 1 | `SELECT * FROM "main"."t_order" LIMIT 100;` | 1 行 · 2 ms |
+| Oracle | 暂无实例（本机 `192.168.175.103:1521` 不可达），只做了方言离线校验 | 分组走同一个 `renderTree`，不另有分支 | `SELECT * FROM "app"."t_user" WHERE ROWNUM <= 100;` | 待有库时点验 |
+| SQL Server | 暂无实例，只做了方言离线校验 | 同上 | `SELECT TOP 100 * FROM [app].[t_user];` | 待有库时点验 |
+
+> 方言校验脚本：`过程文件\_dialect_check.py`，从 `index.html` 里抠出 `quoteIdent` / `selectAllSql` 在 node 里对六种驱动各生成一条，用来保证 Oracle / SQL Server 在没有实例时生成的语句也是对的（`ROWNUM` / `TOP`，标识符引号分别是 `"`、`` ` ``、`[]`）。
+
 **参数探测（六驱动）**：`drivers.proc_args(conn, schema, name, kind)`
 
 | 驱动 | 来源 | 关键处理 |
@@ -513,7 +527,7 @@ HTTP 层同时核对：`/api/schemas` 只回白名单里的 `app`，`/api/object
 
 | 对象 | 参数探测 | 生成的语句 | 执行结果 |
 | --- | --- | --- | --- |
-| `P_NOOP(MSG VARCHAR(100))` | `[{name:'MSG', mode:'IN', type:'VARCHAR(100)'}]` | `CALL "SQLWEB_DMTEST"."P_NOOP"('hello')` | 成功，无结果集，约 10 s |
+| `P_NOOP(MSG VARCHAR(100))` | `[{name:'MSG', mode:'IN', type:'VARCHAR(100)'}]` | `CALL "SQLWEB_DMTEST"."P_NOOP"('hello')` | 成功，无结果集，约 40 ms |
 | `F_ADD(A INT, B INT)` | `[A INT, B INT]`（`V_RET` 已剔除） | `SELECT "SQLWEB_DMTEST"."F_ADD"(1, 2) AS "RETURN_VALUE" FROM DUAL` | 返回 `[[3]]` |
 | `P_ROWS`（无参，内部 `SELECT`） | `[]`（弹窗提示"该对象没有入参，直接执行即可"） | `CALL "SQLWEB_DMTEST"."P_ROWS"()` | 返回 `K/V` 各一列、`A/1` 一行 |
 
@@ -521,6 +535,7 @@ HTTP 层同时核对：`/api/schemas` 只回白名单里的 `app`，`/api/object
 
 1. **schema 列表要合并两个来源**。达梦的 `CREATE SCHEMA` 只建模式对象、不建用户，`DBA_USERS` / `ALL_USERS` 里根本没有它 —— 只查用户表会让"独立模式"整块从树上消失。现在三源合并（`DBA_USERS` + `ALL_USERS` + `SYS.SYSOBJECTS WHERE TYPE$='SCH'`）并去重，系统模式（`SYS` / `SYSDBA` / `SYSAUDITOR` / `SYSSSO` / `CTISYS` / `SYSJOB` / `GUEST`）排在业务模式之后。
 2. **业务账号的字典权限边界**：`EALEPM` 这类业务账号只有 `CREATE SESSION` / `RESOURCE`，读任何 `SYS.*` 一律 `-5504`，只能用 `ALL_*` 兼容视图；`TABLEDEF()` 与 `DBMS_METADATA.GET_DDL()` 在其下返回空（表 DDL 是本工具按字典拼的）；`ALL_TAB_COLUMNS` 看不到自增列，要看 `SYS.SYSCOLUMNS.INFO2`（要 DBA）；`ALL_TABLES.NUM_ROWS` 全 NULL。用一个 DBA 账号建数据源，自增列、列注释、行数才齐全。
+3. **不再执行 `SET SCHEMA`**（这条曾经让每条达梦查询白等 10 秒）。包内 `wheels/` 带的纯 Python 驱动 dm-pure（`dmpy`）执行 `SET SCHEMA` / `ALTER SESSION SET CURRENT_SCHEMA` 时，达梦对"切换成功"的响应 dmpy 解析不了，会一直读到 socket 超时才抛 `TimeoutError`，而 `_use_schema` 又把异常吞掉 —— 于是前端看到的每条查询都耗时 `10044 ms`、而且 schema 根本没切过去。现在达梦直接跳过这句：对象树生成的语句本来就带 `"SCHEMA"."对象"` 全限定名，手写 SQL 时也请用全限定名。实测同一条 `SELECT * FROM "SQLWEB_DMTEST"."T_USER" LIMIT 100` 由 10044 ms 降到 42 ms，`EALEPM` 大库由 10044 ms 降到 23 ms。
 
 > **为什么业务库里建不了存储过程**：`CREATE OR REPLACE PROCEDURE EALEPM.PROC_x(...)` 在 `EALEPM` 账号下报错，不是工具拦的，是账号没有 `CREATE PROCEDURE` 权限（该账号只有 `CREATE SESSION` / `RESOURCE`）。要么让 DBA 执行 `GRANT CREATE PROCEDURE TO EALEPM;`，要么用 `SYSDBA` 建完再 `GRANT EXECUTE` 给业务账号。工具侧对"能建的账号"已经实测通过（`SQLWEB_DMTEST` 下的过程/函数都是由本工具执行 DDL 建的）。
 

@@ -578,10 +578,15 @@ def _use_schema(conn, driver_name, schema):
     sqls = {
         "postgresql": ["SET search_path TO %s" % drivers.quote_literal(schema)],
         "mysql": [],
-        "oracle": ["ALTER SESSION SET CURRENT_SCHEMA = %s" % drivers.quote_literal(schema.upper())],
-        "dameng": ["SET SCHEMA %s" % schema.upper()],
-        "sqlserver": [],
         "sqlite": [],
+        "sqlserver": [],
+        "oracle": ["ALTER SESSION SET CURRENT_SCHEMA = %s" % drivers.quote_literal(schema.upper())],
+        # 达梦不走这句：包内 wheels 带的纯 Python 驱动 dm-pure（dmpy）执行 SET SCHEMA 时，
+        # 达梦把"成功"的响应发成了它解析不了的样子，dmpy 会一直读到 socket 超时才抛
+        # TimeoutError（实测每条都卡满 timeout，默认 10 s），而 _use_schema 又把异常吞掉，
+        # 于是每条查询白等 10 秒还不生效。树里生成的语句本来就带 "SCHEMA"."OBJ" 全限定名，
+        # 达梦侧请直接用全限定名，不要依赖当前 schema。
+        "dameng": [],
     }.get(driver_name, [])
     for s in sqls:
         try:
