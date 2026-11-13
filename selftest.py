@@ -523,6 +523,48 @@ try:
 finally:
     sqlweb.AppState.cfg["base_path"] = _old_base
 
+print("=== 13. 压缩响应格式（防 ERR_CONTENT_DECODING_FAILED 复发） ===")
+# 浏览器按 "Content-Encoding: gzip" 解码，服务端必须真的发 gzip 容器（头 1f 8b）。
+# 曾用 zlib.compress 发出 zlib 容器（头 78 9c），症状是 HTTP 200 + net::ERR_CONTENT_DECODING_FAILED，
+# 且只在大响应（>2048 字节，触发压缩）时才出现，小查询完全正常 —— 线上极难定位。
+sqlweb.AppState.limiter = sqlweb.RateLimiter()
+_cid = sqlweb.AppState.captchas.put("0000")
+_sc, _hd, _b = call("POST", "/api/login", {"username": "admin", "password": "NewPass1234",
+                                           "captcha_id": _cid, "captcha": "0000"})
+_gck = (_hd.get("Set-Cookie") or "").split(";")[0]
+
+
+def _raw_query(sql):
+    """发请求并返回未解压的原始字节 + 响应头。"""
+    req = urllib.request.Request(BASE + "/api/query",
+                                 data=json.dumps({"db": "lite", "sql": sql}).encode("utf-8"),
+                                 method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept-Encoding", "gzip")
+    if _gck:
+        req.add_header("Cookie", _gck)
+    r = OPENER.open(req, timeout=20)
+    return r.headers, r.read()
+
+
+_hd_big, _raw_big = _raw_query("SELECT hex(randomblob(4000)) AS big")
+_ce = (_hd_big.get("Content-Encoding") or "").lower()
+_ok_gz = _ce == "gzip" and _raw_big[:2] == b"\x1f\x8b"
+_decoded_ok = False
+if _ok_gz:
+    import gzip as _gzip
+    try:
+        _decoded_ok = json.loads(_gzip.decompress(_raw_big).decode("utf-8")).get("ok") is True
+    except Exception as _e:
+        _decoded_ok = "decompress err: %s" % _e
+check("大响应压缩：声明 gzip 且真是 gzip 容器（1f 8b）",
+      _ok_gz, "CE=%s magic=%s" % (_ce, _raw_big[:4].hex()))
+check("大响应压缩：浏览器式解码后仍是合法 JSON", _decoded_ok is True, str(_decoded_ok)[:120])
+
+_hd_small, _raw_small = _raw_query("SELECT 1 AS one")
+check("小响应不压缩（无 Content-Encoding）",
+      not (_hd_small.get("Content-Encoding") or ""), "CE=%s" % _hd_small.get("Content-Encoding"))
+
 print()
 print("=" * 52)
 print("通过 %d 项，失败 %d 项" % (PASS_N[0], FAIL_N[0]))

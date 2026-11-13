@@ -732,7 +732,10 @@ class Handler(BaseHTTPRequestHandler):
         # 对象树、补全字典动辄上百 KB：压缩一下，经 nginx 转发时体验差别很明显
         gz = len(body) > 2048 and "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
         if gz:
-            body = zlib.compress(body, 6)
+            # 必须产出 gzip 容器（RFC 1952，头 1f 8b）；zlib.compress 给的是 zlib 容器（头 78 9c），
+            # 浏览器按 "Content-Encoding: gzip" 解码时会失败：HTTP 200 但 net::ERR_CONTENT_DECODING_FAILED
+            _c = zlib.compressobj(6, zlib.DEFLATED, 31)
+            body = _c.compress(body) + _c.flush()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         if gz:

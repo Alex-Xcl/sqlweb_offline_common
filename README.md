@@ -464,7 +464,7 @@ HTTP 层同时核对：`/api/schemas` 只回白名单里的 `app`，`/api/object
 | --- | --- | --- |
 | 元数据 TTL 缓存 | `/api/objects`、`/api/source`、`/api/catalog`、`/api/tables` 按"数据源 + 库 + schema"缓存 120 s（字典 300 s）；`&refresh=1` 强制重查 | 反复展开同一 schema 不再打库；改完对象想立刻看到，加 `refresh=1` 或重启 |
 | 连接复用 | 每个数据源保留最多 2 条空闲连接，下次请求先 `SELECT 1`（Oracle/达梦用 `SELECT 1 FROM DUAL`）验活，失败就丢弃重连；SQLite 因 `check_same_thread` 不复用 | 省掉 TCP 握手 + 登录鉴权；连接异常自动降级为新建，不会把坏连接传下去 |
-| 响应压缩 | 任何 `/api/*` JSON 超过 2 KB 且客户端支持时用 gzip | 补全字典 / 对象树这类响应通常压到 1/5 以内 |
+| 响应压缩 | 任何 `/api/*` JSON 超过 2 KB 且客户端支持时用 gzip（**发的是真 gzip 容器，头 `1f 8b`**；早期写成 zlib 容器会触发浏览器 `ERR_CONTENT_DECODING_FAILED`，见 11 节排障） | 补全字典 / 对象树这类响应通常压到 1/5 以内 |
 
 改数据源（保存 / 删除 / 设默认）时缓存与空闲连接一起清掉，避免换源后还看到旧 schema。
 
@@ -767,6 +767,8 @@ sqlweb_offline_common_common-1.3.0/
 | 忘记管理员口令 | 停服后删掉 `sqlweb.db` 的 `users` 行（或整库），重启回到初始化模式并打印新令牌 |
 | 手改了 SQL / 状态库但界面没变 | 界面与接口一律以 `sqlweb.db` 为准；用 `sqlite3` 直接改库要重启服务才生效。界面里改则不用 |
 | nginx 反代 `/sqlweb/` 打不开（404 / 白屏 / 资源全丢） | 先看启动日志有没有 `访问前缀: /sqlweb`；没有就是 `base_path` 没读到——用 `python3 setconfig.py --set base_path=/sqlweb` 写状态库再重启，不要再改 `config.json`。另确认 `proxy_pass` 的斜杠跟模式配套：服务端 `base_path=/sqlweb` 时写 `http://127.0.0.1:8899`（不带斜杠），`base_path` 为空时才写 `http://127.0.0.1:8899/`。配反了必然 404，页面会提示当前前缀 |
+| 执行查询只报 `Failed to fetch`，F12 里请求是 `200 (OK)` + `net::ERR_CONTENT_DECODING_FAILED` | 服务端压缩流格式不匹配：声明 `Content-Encoding: gzip` 却发了 zlib 容器（头 `78 9c`）。**只有响应 >2048 字节（触发压缩）时才出现，小查询完全正常**，所以常被误判成"SQL 或网络问题"。1.3.0 已修（改发真 gzip 容器，头 `1f 8b`）。老包热修：`sqlweb.py` 里把 `body = zlib.compress(body, 6)` 换成 `_c = zlib.compressobj(6, zlib.DEFLATED, 31); body = _c.compress(body) + _c.flush()`，重启服务即可；不想压缩就临时把 `len(body) > 2048` 改成 `False` |
+| 点执行后状态栏一直是 `执行中…` 且连接被重置 | 查大字段（`text` 里存 XML/JSON，单行数 MB）时内存与传输压力大。先用 `select count(*), pg_size_pretty(pg_total_relation_size('<表>'))` 看体积，再给查询补 `LIMIT`；或调小 `max_rows` |
 | `CREATE [OR REPLACE] PROCEDURE` / 触发器报语法错误、像是被截断 | 数据源是只读时先在【数据源管理】改成「可写」；仍报错就看错误里的语句片段——1.3.0 起程序块整段提交，若片段以 `END` 开头说明用了旧包，换新包即可 |
 | 改了 `config.json` 但端口 / 子路径没变 | 1.3.0 起配置真源是 `sqlweb.db`，`config.json` 只在首次启动导入一次。用 `python3 setconfig.py --set ...` 或界面改；启动日志会对残留的 `config.json` 打出提示 |
 | 达梦在 mac 上报 `ModuleNotFoundError: dmPython` | 装纯 Python 驱动：`pip install dm-pure`，服务会自动降级（3.7 上走 vendor 里的 `dmpy`） |
